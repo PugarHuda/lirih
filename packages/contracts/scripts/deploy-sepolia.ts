@@ -11,12 +11,15 @@ const MATCHING_POOL = 10_000n * 10n ** 18n; // 10k mUSDC matching pool
 // round expired unusable — always set this deliberately.
 const CONTRIB_WINDOW_SECS = Number(process.env.CONTRIB_WINDOW_SECS ?? 60 * 60);
 
-// Demo grantee payouts: the well-known Hardhat/Anvil test accounts #1..#3. Real,
+// Demo grantees: the well-known Hardhat/Anvil test accounts #1..#3. Real,
 // publicly verifiable addresses — the split that pays them is the live 0xSplits V2.
-const PAYOUTS = (process.env.PROJECT_PAYOUTS ??
-  '0x70997970C51812dc3A010C7d01b50e0d17dc79C8,' +
-  '0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC,' +
-  '0x90F79bf6EB2c4f870365E785982E1f101E93b906').split(',') as `0x${string}`[];
+// Names live on-chain so the frontend reads real state instead of a hardcoded
+// label map; grantee identity is public by design (only amounts are secret).
+const PROJECTS: { payout: `0x${string}`; name: string }[] = [
+  { payout: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8', name: 'Clean Water Initiative' },
+  { payout: '0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC', name: 'Open Source Maintainers' },
+  { payout: '0x90F79bf6EB2c4f870365E785982E1f101E93b906', name: 'Neighbourhood Clinic' },
+];
 
 async function main() {
   const { viem } = await network.connect({ network: 'sepolia', chainType: 'op' });
@@ -52,10 +55,10 @@ async function main() {
 
   // A round with zero projects makes `contribute` revert UnknownProject — the
   // reason the first deploy was unusable. Register the grantees here.
-  for (const payout of PAYOUTS) {
-    const h = await round.write.registerProject([payout]);
+  for (const [i, p] of PROJECTS.entries()) {
+    const h = await round.write.registerProject([p.payout, p.name]);
     await pub.waitForTransactionReceipt({ hash: h });
-    console.log('project registered:', payout);
+    console.log(`project ${i} registered: ${p.name} -> ${p.payout}`);
   }
 
   console.log(`\n--- paste into packages/web/.env.local ---

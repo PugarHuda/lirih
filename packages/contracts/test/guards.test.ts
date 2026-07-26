@@ -1,0 +1,139 @@
+import { strict as assert } from 'node:assert';
+import { describe, it } from 'node:test';
+import { nox } from '@iexec-nox/nox-hardhat-plugin';
+import { parseEther } from 'viem';
+import { timeTravel } from './helpers.ts';
+
+// Guard / phase / authorization tests. These deliberately avoid a SUCCESSFUL
+// contribute: every one costs 164 sequential Runner ops, and each guard here
+// reverts before any Nox arithmetic runs, so the whole file stays cheap.
+// The happy path lives in round.e2e.test.ts.
+
+const SPLIT_ZERO = '0x0000000000000000000000000000000000000000';
+
+// Short window on purpose: the suite shares a ~3600s proof-expiry budget
+// across ALL files. See test/helpers.ts.
+async function fixture(windowSecs = 20n) {
+  const conn = await nox.connect();
+  const { viem } = conn;
+  const [op, other] = await viem.getWalletClients();
+  const pub = await viem.getPublicClient();
+
+  const usdc = await viem.deployContract('MockUSDC');
+  const cusdc = await viem.deployContract('cUSDC', [usdc.address]);
+  const factory = await viem.deployContract('MockSplitFactory');
+  const M = parseEther('10000');
+  const now = (await pub.getBlock()).timestamp;
+  const round = await viem.deployContract('LirihRound', [
+    cusdc.address, usdc.address, factory.address, M, now + windowSecs,
+  ]);
+  return { conn, viem, pub, op, other, usdc, cusdc, factory, round, M };
+}
+
+describe('LirihRound guards', () => {
+  it('only the operator may register projects', async () => {
+    const { round, other } = await fixture();
+    await assert.rejects(
+      () => round.write.registerProject([SPLIT_ZERO, 'x'], { account: other.account }),
+      /NotOperator/,
+      'a stranger must not be able to add a payout address',
+    );
+  });
+
+  it('rejects contributions once the deadline has passed', async () => {
+    const { round, conn, op } = await fixture();
+    await round.write.registerProject([SPLIT_ZERO, 'demo project']);
+    await timeTravel(conn, 21);
+    // the deadline check runs before fromExternal, so a dummy handle is fine
+    await assert.rejects(
+      () => round.write.contribute([0n, `0x${'00'.repeat(32)}`, '0x', op.account.address]),
+      /DeadlinePassed/,
+    );
+  });
+
+  it('refuses to tally before the deadline', async () => {
+    const { round } = await fixture();
+    await assert.rejects(() => round.write.finalizeTally(), /DeadlineNotReached/);
+  });
+
+  it('enforces the phase order', async () => {
+    const { round, conn } = await fixture();
+    // Contribution phase: neither of the later steps may run
+    await assert.rejects(() => round.write.computeAllocations(), /WrongPhase/);
+    await assert.rejects(() => round.write.settle(), /WrongPhase/);
+
+    await timeTravel(conn, 21);
+    await round.write.finalizeTally();
+    // Tallied phase: cannot tally twice, cannot settle yet
+    await assert.rejects(() => round.write.finalizeTally(), /WrongPhase/);
+    await assert.rejects(() => round.write.settle(), /WrongPhase/);
+  });
+
+  // This is the regression test for making the pipeline permissionless. If these
+  // three steps were operator-gated, a silent operator could strand donor escrow
+  // in the contract forever.
+  it('lets ANYONE drive the round to settlement, not just the operator', async () => {
+    const { round, usdc, other, conn, M } = await fixture();
+    await usdc.write.mint([round.address, M]); // fund the matching pool
+
+    await timeTravel(conn, 21);
+    await round.write.finalizeTally({ account: other.account });
+    assert.equal(Number(await round.read.phase()), 1, 'Tallied by a non-operator');
+
+    await round.write.computeAllocations({ account: other.account });
+    assert.equal(Number(await round.read.phase()), 2, 'Allocated by a non-operator');
+
+    await round.write.settle({ account: other.account });
+    assert.equal(Number(await round.read.phase()), 3, 'Settled by a non-operator');
+  });
+
+  // Covers the `total > 0` guard: with no project earning any match there are no
+  // QF weights to divide the pool by, and the Splits factory would revert on a
+  // zero totalAllocation. The round must still be able to close.
+  it('settles an empty round without reverting, leaving the pool untouched', async () => {
+    const { round, usdc, conn, M } = await fixture();
+    await usdc.write.mint([round.address, M]);
+    await timeTravel(conn, 21);
+
+    await round.write.finalizeTally();
+    await round.write.computeAllocations();
+    await round.write.settle();
+
+    assert.equal(Number(await round.read.phase()), 3, 'phase == Settled');
+    assert.equal(await round.read.settledSplit(), SPLIT_ZERO, 'no split was created');
+    assert.equal(await usdc.read.balanceOf([round.address]), M, 'pool stayed put');
+  });
+
+  it('refuses to settle while an allocation is still sealed', async () => {
+    const { round, usdc, conn, M } = await fixture();
+    await usdc.write.mint([round.address, M]);
+    await round.write.registerProject([SPLIT_ZERO, 'demo project']);
+    await timeTravel(conn, 21);
+    await round.write.finalizeTally();
+    await round.write.computeAllocations();
+    // one project registered, zero revealed -> revealedCount != projects.length
+    await assert.rejects(() => round.write.settle(), /WrongPhase/);
+  });
+
+  it('rejects a forged decryption proof', async () => {
+    const { round, conn } = await fixture();
+    await round.write.registerProject([SPLIT_ZERO, 'demo project']);
+    await timeTravel(conn, 21);
+    await round.write.finalizeTally();
+    await round.write.computeAllocations();
+    // The contract trusts only the gateway signature, never the caller's number.
+    await assert.rejects(
+      () => round.write.revealAllocation([0n, parseEther('9999'), '0x']),
+      /.*/,
+      'a bogus proof must not be accepted',
+    );
+  });
+
+  it('underfunded matching pool cannot settle', async () => {
+    const { round, conn } = await fixture(); // note: pool never funded
+    await timeTravel(conn, 21);
+    await round.write.finalizeTally();
+    await round.write.computeAllocations();
+    await assert.rejects(() => round.write.settle(), /pool underfunded/);
+  });
+});

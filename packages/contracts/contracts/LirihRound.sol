@@ -41,6 +41,10 @@ contract LirihRound is ReentrancyGuard {
         uint256 revealedAlloc; // filled by revealAllocation()
         bool revealed;
         bool exists;
+        // Appended LAST on purpose: the auto-generated `projects(uint256)` getter
+        // returns members in declaration order, so adding this at the end keeps
+        // every existing tuple index stable for callers.
+        string name;           // display label; grantee identity is public by design
     }
 
     address public immutable operator;
@@ -68,7 +72,7 @@ contract LirihRound is ReentrancyGuard {
     euint256 internal EONE;
     euint256 internal ECAP;
 
-    event ProjectRegistered(uint256 indexed id, address payout);
+    event ProjectRegistered(uint256 indexed id, address payout, string name);
     event Contributed(uint256 indexed id, address indexed donor);
     event AllocationRevealed(uint256 indexed id, uint256 amount);
     event Settled(address split);
@@ -114,16 +118,21 @@ contract LirihRound is ReentrancyGuard {
 
     // ── Setup ────────────────────────────────────────────────────────────────
 
-    function registerProject(address payout) external onlyOperator returns (uint256 id) {
+    function registerProject(address payout, string calldata name)
+        external
+        onlyOperator
+        returns (uint256 id)
+    {
         if (phase != Phase.Contribution) revert WrongPhase();
         require(projects.length < MAX_PROJECTS, "too many projects");
         id = projects.length;
         Project storage p = projects.push();
         p.payout = payout;
+        p.name = name;
         p.sumRoot = EZERO;
         p.sumC = EZERO;
         p.exists = true;
-        emit ProjectRegistered(id, payout);
+        emit ProjectRegistered(id, payout, name);
     }
 
     // ── Contribution ──────────────────────────────────────────────────────────
@@ -174,7 +183,13 @@ contract LirihRound is ReentrancyGuard {
 
     /// @notice matchₚ = Sp² − Cp (clamped ≥0), summed into sumMatch. After
     ///         deadline, once. Loops all projects — keep K small for the demo.
-    function finalizeTally() external onlyOperator {
+    /// @dev PERMISSIONLESS by design. This step and every step after it are
+    ///      fully deterministic — the phase guards and the deadline fix the only
+    ///      valid ordering, and there is no operator discretion left to exercise.
+    ///      Gating them on the operator would mean a silent or unwilling operator
+    ///      could strand donor escrow in this contract forever. Any donor can
+    ///      now push a round to completion; the caller just pays the gas.
+    function finalizeTally() external {
         if (phase != Phase.Contribution) revert WrongPhase();
         if (block.timestamp <= contributionDeadline) revert DeadlineNotReached();
 
@@ -192,7 +207,8 @@ contract LirihRound is ReentrancyGuard {
 
     /// @notice allocₚ = M·matchₚ/Σmatchₚ, marked publicly decryptable. Guarded
     ///         against Σmatchₚ == 0 (empty round) via select.
-    function computeAllocations() external onlyOperator {
+    /// @dev Permissionless — see the note on `finalizeTally`.
+    function computeAllocations() external {
         if (phase != Phase.Tallied) revert WrongPhase();
         euint256 Menc = Nox.toEuint256(matchingPool);
         Nox.allowThis(Menc);
@@ -236,7 +252,10 @@ contract LirihRound is ReentrancyGuard {
     /// @dev The raw donations move as cToken and stay ENCRYPTED — no unwrap flow
     ///      needed here. Each payout receives cUSDC and can unwrap on its own
     ///      schedule, so per-project raw totals never become public either.
-    function settle() external onlyOperator nonReentrant {
+    /// @dev Permissionless — see the note on `finalizeTally`. Recipients and
+    ///      weights come from already-revealed on-chain state, so the caller
+    ///      cannot influence who gets paid what.
+    function settle() external nonReentrant {
         if (phase != Phase.Allocated) revert WrongPhase();
         if (revealedCount != projects.length) revert WrongPhase();
         require(matchingToken.balanceOf(address(this)) >= matchingPool, "pool underfunded");

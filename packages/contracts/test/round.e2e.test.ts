@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import { nox, NOX_COMPUTE_ADDRESS, handleGatewayUrl } from '@iexec-nox/nox-hardhat-plugin';
 import { createViemHandleClient } from '@iexec-nox/handle';
 import { parseEther } from 'viem';
+import { timeTravel } from './helpers.ts';
 
 // A handle client whose input-proof owner is a SPECIFIC donor. contribute()
 // checks ownerInProof == msg.sender, and the Handle SDK reads the owner from
@@ -54,15 +55,15 @@ describe('Lirih end-to-end confidential QF round', () => {
     const pub = await viem.getPublicClient();
     const now = (await pub.getBlock()).timestamp;
     const round = await viem.deployContract('LirihRound', [
-      cusdc.address, usdc.address, factory.address, M, now + 3600n,
+      cusdc.address, usdc.address, factory.address, M, now + 120n,
     ]);
     await usdc.write.mint([round.address, M]); // fund the public matching pool
 
     // two projects
     const pA = '0x000000000000000000000000000000000000aaaa';
     const pB = '0x000000000000000000000000000000000000bbbb';
-    await round.write.registerProject([pA]);
-    await round.write.registerProject([pB]);
+    await round.write.registerProject([pA, 'Crowd-funded project']);
+    await round.write.registerProject([pB, 'Whale-funded project']);
 
     // contributions: project A gets a crowd, project B one whale — QF should
     // favour A. Keep amounts small: each sqrt is ~164 sequential Runner ops.
@@ -89,8 +90,7 @@ describe('Lirih end-to-end confidential QF round', () => {
     }
 
     // advance past the (chain-relative) deadline, then finalize
-    await conn.provider.request({ method: 'evm_increaseTime', params: ['0xE11'] }); // 3601s
-    await conn.provider.request({ method: 'evm_mine', params: [] });
+    await timeTravel(conn, 121); // just past the short window — see test/helpers.ts
     await round.write.finalizeTally();
     await round.write.computeAllocations();
 

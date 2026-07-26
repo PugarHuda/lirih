@@ -47,7 +47,22 @@ export const onRpcRequest: OnRpcRequestHandler = async ({ request }) => {
     case 'decryptMine': {
       const { handle } = request.params as { handle: `0x${string}` };
       const c = await client();
-      const { value } = await c.decrypt(handle);
+      // A handle exists on-chain immediately, but its ciphertext only exists once
+      // the remote Runner has processed the event — and the Runner is
+      // single-threaded with no batching. So an early failure is expected, not
+      // exceptional; retry before surfacing anything to the user.
+      const decrypt = async () => {
+        for (let i = 1; i <= 12; i++) {
+          try {
+            return await c.decrypt(handle);
+          } catch (err) {
+            if (i === 12) throw err;
+            await new Promise((r) => setTimeout(r, 5000));
+          }
+        }
+        throw new Error('unreachable');
+      };
+      const { value } = await decrypt();
       await snap.request({
         method: 'snap_dialog',
         params: {

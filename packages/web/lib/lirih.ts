@@ -58,6 +58,7 @@ export const roundAbi = [
       { name: 'revealedAlloc', type: 'uint256' },
       { name: 'revealed', type: 'bool' },
       { name: 'exists', type: 'bool' },
+      { name: 'name', type: 'string' }, // appended last on-chain; index 8
     ] },
 ] as const;
 

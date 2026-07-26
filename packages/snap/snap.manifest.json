@@ -2,11 +2,16 @@
   "version": "0.1.0",
   "description": "Lirih — confidential donations from inside your wallet. Encryption and decryption happen in MetaMask's sandbox; plaintext never reaches a web page.",
   "proposedName": "Lirih Confidential",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PugarHuda/lirih.git"
+  },
   "source": {
-    "shasum": "JTa2H5usBcCj0sql0n8PwlMok+OSac9RGDLEJPMcyKA=",
+    "shasum": "sAe9xD/pUBP9+jWnPMAXPIfFPMXc1XUS1esR+kgs8iU=",
     "location": {
       "npm": {
         "filePath": "dist/bundle.js",
+        "iconPath": "images/icon.svg",
         "packageName": "@lirih/snap",
         "registry": "https://registry.npmjs.org/"
       }

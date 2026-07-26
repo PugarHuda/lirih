@@ -92,9 +92,25 @@ gateway and Runner on chainId `11155111`, not the local test stack:
 Encrypted QF output matches the plaintext oracle in `reference/qf-reference.mjs`
 before settlement is allowed to proceed.
 
-Gas, measured: `finalizeTally` ≈130k/project · `computeAllocations` ≈114k/project
-· `contribute` 2.05M. `MAX_PROJECTS` is 64, which binds before the block limit
-does.
+Gas, measured on the Nox Runner at K=8 projects (`test/bench.test.ts`):
+
+| Step | Gas | Per project |
+|---|---|---|
+| `contribute` (one encrypted sqrt) | 2.60M | — |
+| `finalizeTally` | 1,037k | ~130k |
+| `computeAllocations` | 915k | ~114k |
+| `settle` (incl. forwarding donations to every project) | 2,008k | ~187k |
+
+`contribute` costs 2.05M on live Sepolia versus 2.60M on the local Runner. Each
+contribution is its own transaction, so the donor count is not bounded by the
+block gas limit; only the per-project loops are. `MAX_PROJECTS` is 64 → the
+finalize+allocate+settle path lands near 27M, which still fits a Sepolia block
+(60M limit at time of writing).
+
+The test suite is **12 passing** against the real Nox stack: encrypted-sqrt
+exactness, the full round versus a plaintext QF oracle, the gas benchmark, and
+nine guard tests covering phase ordering, deadline enforcement, authorization,
+a forged decryption proof, an empty round, and an underfunded pool.
 
 The only mock in the system is the ERC-20 faucet token (`MockUSDC`) standing in
 for USDC — the round, the Nox compute, and the 0xSplits V2 settlement are all

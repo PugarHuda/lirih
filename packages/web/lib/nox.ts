@@ -35,8 +35,27 @@ export async function publicDecryptAllocation(wallet: WalletClient, handle: `0x$
 
 /// ACL-gated private decrypt (gasless) — used to let a donor read their OWN
 /// contribution handle. Requires the wallet to hold the viewer/admin role.
-export async function decryptMine(wallet: WalletClient, handle: `0x${string}`) {
+///
+/// Retries because a handle is available on-chain IMMEDIATELY but its ciphertext
+/// only exists once the remote Runner has processed the event, and the Runner is
+/// single-threaded with no batching. Decrypting right after the tx confirms is a
+/// race, so a first failure is expected rather than exceptional.
+export async function decryptMine(
+  wallet: WalletClient,
+  handle: `0x${string}`,
+  onWait?: (attempt: number, total: number) => void,
+) {
   const client = await getHandleClient(wallet);
-  const { value } = await client.decrypt(handle);
-  return value as bigint;
+  const ATTEMPTS = 12;
+  for (let i = 1; i <= ATTEMPTS; i++) {
+    try {
+      const { value } = await client.decrypt(handle);
+      return value as bigint;
+    } catch (err) {
+      if (i === ATTEMPTS) throw err;
+      onWait?.(i, ATTEMPTS);
+      await new Promise((r) => setTimeout(r, 5000));
+    }
+  }
+  throw new Error('unreachable');
 }

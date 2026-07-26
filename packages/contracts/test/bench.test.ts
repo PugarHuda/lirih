@@ -2,6 +2,7 @@ import { describe, it } from 'node:test';
 import { nox, NOX_COMPUTE_ADDRESS, handleGatewayUrl } from '@iexec-nox/nox-hardhat-plugin';
 import { createViemHandleClient } from '@iexec-nox/handle';
 import { parseEther } from 'viem';
+import { timeTravel } from './helpers.ts';
 
 // Owner-shimmed handle client — see round.e2e.test.ts for why.
 const donorHandleClient = (wallet: any) =>
@@ -38,13 +39,13 @@ describe('Lirih benchmark — gas per step + L ceiling', () => {
     const M = parseEther('10000');
     const now = (await pub.getBlock()).timestamp;
     const round = await viem.deployContract('LirihRound', [
-      cusdc.address, usdc.address, factory.address, M, now + 3600n,
+      cusdc.address, usdc.address, factory.address, M, now + 300n,
     ]);
     await usdc.write.mint([round.address, M]);
 
     // K projects (payouts must be distinct + non-zero for the split)
     for (let i = 0; i < K; i++) {
-      await round.write.registerProject([`0x${(i + 1).toString(16).padStart(40, '0')}` as `0x${string}`]);
+      await round.write.registerProject([`0x${(i + 1).toString(16).padStart(40, '0')}` as `0x${string}`, `project ${i}`]);
     }
 
     // fund 3 real contributions (rest of the K projects stay empty)
@@ -68,8 +69,7 @@ describe('Lirih benchmark — gas per step + L ceiling', () => {
       contributeGas = await gas(h); // last one; all are O(1) — one sqrt each
     }
 
-    await conn.provider.request({ method: 'evm_increaseTime', params: ['0xE11'] });
-    await conn.provider.request({ method: 'evm_mine', params: [] });
+    await timeTravel(conn, 301); // short jump — see test/helpers.ts
 
     const finalizeGas = await gas(await round.write.finalizeTally());
     const allocGas = await gas(await round.write.computeAllocations());

@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48" role="img" aria-label="Lirih confidential donations">
+  <title>Lirih</title>
+  <circle cx="24" cy="24" r="24" fill="#0f3d2e"/>
+  <!-- padlock: the donation is sealed -->
+  <path d="M17 22v-4a7 7 0 0 1 14 0v4" fill="none" stroke="#7fd8a4" stroke-width="3" stroke-linecap="round"/>
+  <rect x="13" y="22" width="22" height="16" rx="3" fill="#7fd8a4"/>
+  <!-- quadratic curve through the shackle body: the QF weighting -->
+  <path d="M17 34c4-10 10-10 14 0" fill="none" stroke="#0f3d2e" stroke-width="2.5" stroke-linecap="round"/>
+</svg>

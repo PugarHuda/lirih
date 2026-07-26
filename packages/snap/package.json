@@ -3,6 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "main": "dist/bundle.js",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PugarHuda/lirih.git"
+  },
   "scripts": {
     "build": "mm-snap build",
     "serve": "mm-snap serve"

@@ -10,11 +10,16 @@ import { ADDRESSES, roundAbi, cusdcAbi, musdcAbi, tx } from '../lib/lirih';
 import { connectSnap, getNoxAddress } from '../lib/snap';
 import Results from './Results';
 
+/// Which key was granted the viewer role — decides whether the coercion-resistance
+/// claim actually holds for this donation. Never inferred silently; see donate().
+type ViewerMode = 'snap' | 'eoa';
+
 export default function Home() {
   const [account, setAccount] = useState<`0x${string}`>();
   const [amount, setAmount] = useState('100');
   const [projectId, setProjectId] = useState('0');
   const [status, setStatus] = useState('');
+  const [viewerMode, setViewerMode] = useState<ViewerMode>();
 
   async function wallet() {
     const eth = (window as any).ethereum;
@@ -43,13 +48,20 @@ export default function Home() {
   async function donate() {
     const w = await wallet();
     // Encrypt with the EOA (satisfies fromExternal: encrypting wallet == tx
-    // sender). Grant the Snap's Nox identity as viewer so the donor can later
-    // decrypt their own contribution inside MetaMask. Falls back to the EOA.
+    // sender). The VIEWER is what decides whether coercion resistance actually
+    // holds, so it is never chosen silently:
+    //   Snap identity -> key lives in the SES sandbox and cannot sign for a
+    //     briber, so the donor can read their own amount and prove nothing.
+    //   EOA fallback  -> the donor CAN sign to prove their amount to a briber.
+    //     Still private on-chain, but NOT coercion resistant. Surfaced in the UI.
     let viewer = w.account!.address as `0x${string}`;
+    let mode: ViewerMode = 'eoa';
     try {
       await connectSnap();
       viewer = (await getNoxAddress()).address;
-    } catch { /* no snap installed — EOA can decrypt via the page */ }
+      mode = 'snap';
+    } catch { /* snap unavailable — fall back, but say so */ }
+    setViewerMode(mode);
 
     setStatus('encrypting amount (Nox)…');
     const { handle, handleProof } = await encryptDonation(w, parseEther(amount), ADDRESSES.round);
@@ -74,6 +86,17 @@ export default function Home() {
         <button onClick={donate}>2 · Donate (encrypted)</button>
       </div>
       <p style={{ marginTop: 16, color: '#555' }}>{status}</p>
+      {viewerMode && (
+        <p style={{
+          marginTop: 8, padding: '8px 12px', borderRadius: 6, fontSize: 14,
+          background: viewerMode === 'snap' ? '#e7f6ec' : '#fff4e5',
+          border: `1px solid ${viewerMode === 'snap' ? '#a3d9b1' : '#f0c987'}`,
+        }}>
+          {viewerMode === 'snap'
+            ? '🔒 Coercion-resistant: your viewing key lives inside the MetaMask Snap sandbox. You can read your own donation; you cannot prove it to anyone else.'
+            : '⚠️ Snap not installed — your EOA was granted the viewing role. Your amount is still encrypted on-chain, but you CAN sign to prove it to a third party, so this donation is not coercion-resistant. Install the Snap for the full guarantee.'}
+        </p>
+      )}
       <Results projectId={Number(projectId)} />
     </main>
   );
