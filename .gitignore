@@ -1,0 +1,11 @@
+node_modules/
+# NEVER commit: packages/contracts/.env holds the deployer private key
+.env
+dist/
+artifacts/
+cache/
+coverage/
+*.log
+.next/
+next-env.d.ts
+*.tsbuildinfo

@@ -1,0 +1,73 @@
+// Lirih MetaMask Snap. The confidential-compute client (@iexec-nox/handle) runs
+// INSIDE the SES sandbox: RSA keygen, ECDH/HKDF/AES-GCM decrypt, gateway fetch —
+// plaintext and the ephemeral key never leave MetaMask to a web page.
+//
+// Verified in the day-0 spike:
+//  - crypto.subtle IS available in the Snap SES sandbox (default endowment).
+//  - @iexec-nox/handle uses only WebCrypto + fetch (no node:/Buffer/DOM) -> runs here.
+//  - eth_signTypedData_v4 from the user's EOA is BLOCKED for snaps
+//    (BLOCKED_RPC_METHODS). So the Nox identity is a snap-owned key derived from
+//    snap_getEntropy; grant it the Nox viewer role (addViewer) to read handles.
+import type { OnRpcRequestHandler, Json } from '@metamask/snaps-sdk';
+import { panel, text, heading, copyable } from '@metamask/snaps-sdk';
+import { createEthersHandleClient } from '@iexec-nox/handle';
+import { Wallet } from 'ethers';
+
+// Snap-owned signer derived deterministically from the user's SRP. This address
+// is the donor's Nox identity; the round/token ACLs are granted to it.
+async function snapSigner() {
+  const entropy = await snap.request({
+    method: 'snap_getEntropy',
+    params: { version: 1, salt: 'lirih-nox-v1' },
+  });
+  return new Wallet(entropy as string);
+}
+
+async function client() {
+  // ethers signer path — the handle client only needs signTypedData for the
+  // gateway auth, which the snap-derived Wallet can do locally (no MetaMask
+  // confirmation, so it isn't hit by the blocked-methods restriction).
+  return createEthersHandleClient(await snapSigner());
+}
+
+export const onRpcRequest: OnRpcRequestHandler = async ({ request }) => {
+  switch (request.method) {
+    // Encrypt a donation amount in-sandbox -> {handle, handleProof} for the page
+    // to submit to LirihRound.contribute. Plaintext stays in the sandbox.
+    case 'encryptDonation': {
+      const { amount, round } = request.params as { amount: string; round: `0x${string}` };
+      const c = await client();
+      const { handle, handleProof } = await c.encryptInput(BigInt(amount), 'uint256', round);
+      return { handle: String(handle), handleProof: String(handleProof) } as Json;
+    }
+
+    // Decrypt the donor's OWN contribution handle and show it inside MetaMask.
+    // The donor learns their number but can't prove it to anyone (they'd have to
+    // expose their SRP-derived key) -> coercion resistance.
+    case 'decryptMine': {
+      const { handle } = request.params as { handle: `0x${string}` };
+      const c = await client();
+      const { value } = await c.decrypt(handle);
+      await snap.request({
+        method: 'snap_dialog',
+        params: {
+          type: 'alert',
+          content: panel([
+            heading('Your confidential contribution'),
+            text('Only you can see this. It never left your wallet.'),
+            copyable(`${value}`),
+          ]),
+        },
+      });
+      return { value: value.toString() } as Json;
+    }
+
+    // The Nox identity address the page must fund / grant ACLs to.
+    case 'getNoxAddress': {
+      return { address: (await snapSigner()).address } as Json;
+    }
+
+    default:
+      throw new Error(`Method not found: ${request.method}`);
+  }
+};
