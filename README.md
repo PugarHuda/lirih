@@ -143,9 +143,9 @@ to the next phase, because `sumMatch` is the divisor for every allocation. At 64
 projects the whole path is ~27M and fits a single Sepolia block anyway, but that
 is a property of today's gas limit rather than of the design.
 
-The test suite is **19 passing** against the real Nox stack: encrypted-sqrt
+The test suite is **20 passing** against the real Nox stack: encrypted-sqrt
 exactness, the full round versus a plaintext QF oracle, the splitting property
-below, the gas benchmark, and fifteen guard tests covering phase ordering, deadline
+below, the gas benchmark, and sixteen guard tests covering phase ordering, deadline
 enforcement, authorization, a forged decryption proof, an empty round, an
 underfunded pool, crowdfunded top-ups, stranded-pool recovery, and resumable pagination.
 
@@ -197,6 +197,12 @@ itself be crowdfunded rather than fixed by one sponsor at deployment. It credits
 only what actually arrives, so a fee-on-transfer token cannot inflate `M` past
 the balance really held, and it closes at the contribution deadline because `M`
 is an input to the allocation maths and must not move under a computed tally.
+
+The operator role is transferable in two steps (`transferOperator` then
+`acceptOperator`), so it can be a multisig rather than permanently the EOA that
+sent the deployment. Two-step because the operator is the only party who can
+register projects — a typo that stranded the role would leave a round whose
+projects can never be registered.
 
 `sweepPool()` closes the one remaining path to permanently stranded funds. In an
 all-whale round every project's match is zero, so `settle` has no weights to

@@ -249,4 +249,30 @@ describe('LirihRound guards', () => {
       },
     );
   });
+
+  it('hands the operator role over in two steps', async () => {
+    const { round, op, other } = await fixture();
+    assert.equal((await round.read.operator()).toLowerCase(), op.account.address.toLowerCase());
+
+    await assert.rejects(
+      () => round.write.transferOperator([other.account.address], { account: other.account }),
+      /NotOperator/,
+      'only the current operator may start a handover',
+    );
+
+    await round.write.transferOperator([other.account.address]);
+    // Still the old operator until the new one accepts — a typo must not be able to
+    // strand the role at an address nobody controls, which would leave a round whose
+    // projects can never be registered.
+    assert.equal((await round.read.operator()).toLowerCase(), op.account.address.toLowerCase());
+    await assert.rejects(
+      () => round.write.acceptOperator({ account: op.account }),
+      /not pending operator/,
+    );
+
+    await round.write.acceptOperator({ account: other.account });
+    assert.equal((await round.read.operator()).toLowerCase(), other.account.address.toLowerCase());
+    await round.write.registerProject([SPLIT_ZERO, 'registered by the new operator'], { account: other.account });
+    assert.equal(Number(await round.read.projectCount()), 1);
+  });
 });

@@ -52,7 +52,11 @@ contract LirihRound is ReentrancyGuard {
         string name;           // display label; grantee identity is public by design
     }
 
-    address public immutable operator;
+    // Not immutable: the only powers left here are registering projects and
+    // sweeping an undistributed pool, and both belong to whoever is actually
+    // running the round. Transferable means that can be a multisig or a DAO rather
+    // than permanently the EOA that happened to send the deployment transaction.
+    address public operator;
     IERC7984 public immutable cToken;        // confidential donation token
     IERC20 public immutable matchingToken;   // plaintext token holding pool M
     ISplitFactoryV2 public immutable splitFactory;
@@ -61,6 +65,8 @@ contract LirihRound is ReentrancyGuard {
     // than depending on one sponsor deciding the number up front.
     uint256 public matchingPool;
     uint64 public immutable contributionDeadline;
+
+    address public pendingOperator;
 
     Phase public phase;
     address public settledSplit;
@@ -97,6 +103,8 @@ contract LirihRound is ReentrancyGuard {
     event Settled(address split);
     event PoolFunded(address indexed from, uint256 amount, uint256 newTotal);
     event PoolSwept(address indexed to, uint256 amount);
+    event OperatorTransferStarted(address indexed from, address indexed to);
+    event OperatorTransferred(address indexed from, address indexed to);
 
     error NotOperator();
     error WrongPhase();
@@ -153,6 +161,23 @@ contract LirihRound is ReentrancyGuard {
         p.sumC = EZERO;
         p.exists = true;
         emit ProjectRegistered(id, payout, name);
+    }
+
+    /// @notice Hand the operator role to another address — typically a multisig.
+    /// @dev Two-step on purpose: `pendingOperator` must accept, so a typo cannot
+    ///      strand the role at an address nobody controls. That matters more than
+    ///      usual here because the operator is the only party who can register
+    ///      projects, and a round whose projects can never be registered is dead.
+    function transferOperator(address to) external onlyOperator {
+        pendingOperator = to;
+        emit OperatorTransferStarted(operator, to);
+    }
+
+    function acceptOperator() external {
+        require(msg.sender == pendingOperator, "not pending operator");
+        emit OperatorTransferred(operator, pendingOperator);
+        operator = pendingOperator;
+        pendingOperator = address(0);
     }
 
     /// @notice Top up the matching pool. Permissionless and open to anyone while
