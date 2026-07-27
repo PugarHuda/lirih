@@ -4,9 +4,9 @@
 import { useEffect, useState } from 'react';
 import { formatEther, createWalletClient, custom } from 'viem';
 import { sepolia } from 'viem/chains';
-import { ADDRESSES, roundAbi, PHASES, pub } from '../lib/lirih';
+import { ADDRESSES, roundAbi, PHASES, pub, tx, connectWallet, explorerAddr } from '../lib/lirih';
 import { connectSnap, decryptMine } from '../lib/snap';
-import { decryptMine as decryptMineWithEoa } from '../lib/nox';
+import { decryptMine as decryptMineWithEoa, publicDecryptAllocation } from '../lib/nox';
 
 const ZERO_HANDLE = `0x${'00'.repeat(32)}`;
 
@@ -18,6 +18,68 @@ export default function Results({ projectId }: { projectId: number }) {
   const [note, setNote] = useState('');
   const [mine, setMine] = useState<bigint>();
   const [error, setError] = useState('');
+  const [deadline, setDeadline] = useState<number>();
+  const [split, setSplit] = useState<`0x${string}`>();
+  const [advancing, setAdvancing] = useState(false);
+  const [advNote, setAdvNote] = useState('');
+
+  /// Drive the round to settlement. Every step below is PERMISSIONLESS on-chain:
+  /// after the deadline the computation is fully determined, so gating it on an
+  /// operator would only mean a silent operator could strand donor escrow
+  /// forever. Anyone — including whoever is reading this page — can push it
+  /// through; they just pay the gas.
+  async function advance() {
+    if (advancing) return;
+    setAdvancing(true);
+    setError('');
+    try {
+      const w = await connectWallet(setAdvNote);
+      const me = w.account!.address;
+      const send = (functionName: 'finalizeTally' | 'computeAllocations' | 'settle') =>
+        tx(w, { address: ADDRESSES.round, abi: roundAbi, functionName, chain: sepolia, account: me });
+
+      const ph = Number(await pub.readContract({ address: ADDRESSES.round, abi: roundAbi, functionName: 'phase' }));
+
+      if (ph === 0) {
+        setAdvNote('finalizing tally (encrypted Sp² − Cp per project)…');
+        await send('finalizeTally');
+      } else if (ph === 1) {
+        setAdvNote('computing allocations under encryption…');
+        await send('computeAllocations');
+      } else if (ph === 2) {
+        const n = Number(await pub.readContract({ address: ADDRESSES.round, abi: roundAbi, functionName: 'projectCount' }));
+        let revealedAny = false;
+        for (let i = 0; i < n; i++) {
+          const p = (await pub.readContract({
+            address: ADDRESSES.round, abi: roundAbi, functionName: 'projects', args: [BigInt(i)],
+          })) as unknown as any[];
+          if (p[6]) continue; // already revealed
+          setAdvNote(`decrypting allocation for "${p[8] || `project ${i}`}" via the gateway…`);
+          // Gateway-signed decryption; the contract verifies the signature and
+          // never trusts the number we pass in.
+          const { value, decryptionProof } = await publicDecryptAllocation(w, p[4] as `0x${string}`);
+          setAdvNote(`submitting the proof for "${p[8] || `project ${i}`}"…`);
+          await tx(w, {
+            address: ADDRESSES.round, abi: roundAbi, functionName: 'revealAllocation',
+            args: [BigInt(i), value, decryptionProof], chain: sepolia, account: me,
+          });
+          revealedAny = true;
+        }
+        if (!revealedAny) {
+          setAdvNote('settling — paying the matching pool through 0xSplits V2…');
+          await send('settle');
+        }
+      }
+      setAdvNote('');
+      await refresh();
+    } catch (e) {
+      const msg = (e as Error)?.message ?? String(e);
+      setError(/User rejected|denied/i.test(msg) ? 'Cancelled in wallet.' : msg.split('\n')[0]);
+      setAdvNote('');
+    } finally {
+      setAdvancing(false);
+    }
+  }
 
   async function refresh() {
     if (!ADDRESSES.round || ADDRESSES.round === '0x') {
@@ -28,6 +90,9 @@ export default function Results({ projectId }: { projectId: number }) {
     try {
       const ph = await pub.readContract({ address: ADDRESSES.round, abi: roundAbi, functionName: 'phase' });
       setPhase(Number(ph));
+      setDeadline(Number(await pub.readContract({ address: ADDRESSES.round, abi: roundAbi, functionName: 'contributionDeadline' })));
+      const s = await pub.readContract({ address: ADDRESSES.round, abi: roundAbi, functionName: 'settledSplit' });
+      setSplit(s as `0x${string}`);
       const n = await pub.readContract({ address: ADDRESSES.round, abi: roundAbi, functionName: 'projectCount' });
       const out: Row[] = [];
       for (let i = 0n; i < (n as bigint); i++) {
@@ -114,6 +179,37 @@ export default function Results({ projectId }: { projectId: number }) {
           ))}
         </tbody>
       </table>
+      {phase !== undefined && phase < 3 && (
+        <section style={{
+          marginTop: 20, padding: '12px 14px', borderRadius: 8,
+          background: '#f4f7fb', border: '1px solid #cdd9e8',
+        }}>
+          <b style={{ fontSize: 14 }}>Advance the round — anyone can do this</b>
+          <p style={{ fontSize: 13, color: '#456', margin: '6px 0 10px' }}>
+            After the deadline every remaining step is fully determined, so none of
+            them is gated on an operator. If the organiser disappears, any donor can
+            push the round through and release the funds. You just pay the gas.
+          </p>
+          <button disabled={advancing || (phase === 0 && !!deadline && Date.now() / 1000 <= deadline)} onClick={advance}>
+            {advancing ? '⏳ working…'
+              : phase === 0 ? '1 · Finalize tally'
+              : phase === 1 ? '2 · Compute allocations'
+              : '3 · Reveal & settle'}
+          </button>
+          {phase === 0 && !!deadline && Date.now() / 1000 <= deadline && (
+            <span style={{ marginLeft: 10, fontSize: 13, color: '#666' }}>
+              contributions close {new Date(deadline * 1000).toLocaleString()}
+            </span>
+          )}
+          {advNote && <p style={{ fontSize: 13, color: '#456', marginTop: 8 }}>⏳ {advNote}</p>}
+        </section>
+      )}
+      {phase === 3 && split && split !== `0x${'00'.repeat(20)}` && (
+        <p style={{ marginTop: 16, fontSize: 14 }}>
+          Settled through 0xSplits V2:{' '}
+          <a href={explorerAddr(split)} target="_blank" rel="noreferrer">{split.slice(0, 10)}…</a>
+        </p>
+      )}
       <button style={{ marginTop: 12 }} onClick={decryptContribution}>Decrypt my contribution (in-wallet)</button>
       <button style={{ marginTop: 12, marginLeft: 8 }} onClick={refresh}>Refresh</button>
       {note && <p style={{ marginTop: 10, fontSize: 14, color: '#555' }}>{note}</p>}

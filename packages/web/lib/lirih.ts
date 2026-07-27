@@ -1,6 +1,6 @@
 // Minimal ABIs + addresses for the Lirih frontend. Addresses come from
 // .env.local — deploy-sepolia.ts prints the block to paste.
-import { createPublicClient, http, type WalletClient } from 'viem';
+import { createPublicClient, createWalletClient, custom, http, type WalletClient } from 'viem';
 import { sepolia } from 'viem/chains';
 
 export const ADDRESSES = {
@@ -15,6 +15,33 @@ export const pub = createPublicClient({
   chain: sepolia,
   transport: http(process.env.NEXT_PUBLIC_RPC),
 });
+
+/// Connect the injected wallet, ensuring it is actually on Sepolia first.
+/// Shared by the donor flow and the round-advancing panel: without the guard the
+/// wallet signs against whatever chain it happens to be on and every call
+/// reverts against a codeless address, which reads as "the dApp is broken".
+export async function connectWallet(onStatus?: (s: string) => void) {
+  const eth = (globalThis as any).ethereum;
+  if (!eth) throw new Error('No injected wallet found — install MetaMask.');
+  const [addr] = (await eth.request({ method: 'eth_requestAccounts' })) as `0x${string}`[];
+
+  const current = (await eth.request({ method: 'eth_chainId' })) as string;
+  if (parseInt(current, 16) !== sepolia.id) {
+    onStatus?.('wrong network — switching to Sepolia…');
+    try {
+      await eth.request({
+        method: 'wallet_switchEthereumChain',
+        params: [{ chainId: `0x${sepolia.id.toString(16)}` }],
+      });
+    } catch {
+      throw new Error(
+        `This round lives on Ethereum Sepolia (${sepolia.id}); your wallet is on ` +
+        `chain ${parseInt(current, 16)}. Switch networks and try again.`,
+      );
+    }
+  }
+  return createWalletClient({ chain: sepolia, transport: custom(eth), account: addr });
+}
 
 export const explorerTx = (hash: string) => `https://sepolia.etherscan.io/tx/${hash}`;
 export const explorerAddr = (a: string) => `https://sepolia.etherscan.io/address/${a}`;
@@ -55,6 +82,17 @@ export const roundAbi = [
     ], outputs: [] },
   { type: 'function', name: 'phase', stateMutability: 'view', inputs: [],
     outputs: [{ type: 'uint8' }] },
+  // The post-deadline pipeline is permissionless by design — no operator gate —
+  // so the UI can expose it to anyone. See LirihRound.finalizeTally.
+  { type: 'function', name: 'finalizeTally', stateMutability: 'nonpayable', inputs: [], outputs: [] },
+  { type: 'function', name: 'computeAllocations', stateMutability: 'nonpayable', inputs: [], outputs: [] },
+  { type: 'function', name: 'settle', stateMutability: 'nonpayable', inputs: [], outputs: [] },
+  { type: 'function', name: 'contributionDeadline', stateMutability: 'view', inputs: [],
+    outputs: [{ type: 'uint64' }] },
+  { type: 'function', name: 'revealedCount', stateMutability: 'view', inputs: [],
+    outputs: [{ type: 'uint256' }] },
+  { type: 'function', name: 'settledSplit', stateMutability: 'view', inputs: [],
+    outputs: [{ type: 'address' }] },
   { type: 'function', name: 'projectCount', stateMutability: 'view', inputs: [],
     outputs: [{ type: 'uint256' }] },
   { type: 'function', name: 'projects', stateMutability: 'view',

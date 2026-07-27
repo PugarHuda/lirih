@@ -3,10 +3,10 @@
 // faucet -> wrap -> authorize round -> confidential donate. Results/reveal are
 // driven by the operator script; this page proves the donor path end-to-end.
 import { useState } from 'react';
-import { createWalletClient, custom, parseEther } from 'viem';
+import { parseEther } from 'viem';
 import { sepolia } from 'viem/chains';
 import { encryptDonation } from '../lib/nox';
-import { ADDRESSES, roundAbi, cusdcAbi, musdcAbi, tx, explorerTx } from '../lib/lirih';
+import { ADDRESSES, roundAbi, cusdcAbi, musdcAbi, tx, explorerTx, connectWallet } from '../lib/lirih';
 import { connectSnap, getNoxAddress } from '../lib/snap';
 import Results from './Results';
 
@@ -46,33 +46,11 @@ export default function Home() {
   const track = (label: string) => (hash: `0x${string}`) =>
     setHashes((h) => [...h, { label, hash }]);
 
-  /// Connect, and make sure we are actually on Sepolia first. Without this the
-  /// wallet happily signs against whatever network it is on and every call
-  /// reverts against an address that holds no code — which reads as "the dApp is
-  /// broken" rather than "you are on the wrong chain".
+  /// Shared with the round-advancing panel — the Sepolia guard lives in
+  /// lib/lirih.ts so there is exactly one copy of it.
   async function wallet() {
-    const eth = (window as any).ethereum;
-    if (!eth) throw new Error('No injected wallet found — install MetaMask.');
-    const [addr] = (await eth.request({ method: 'eth_requestAccounts' })) as `0x${string}`[];
-
-    const current = (await eth.request({ method: 'eth_chainId' })) as string;
-    if (parseInt(current, 16) !== sepolia.id) {
-      setStatus(`wrong network — switching to Sepolia…`);
-      try {
-        await eth.request({
-          method: 'wallet_switchEthereumChain',
-          params: [{ chainId: `0x${sepolia.id.toString(16)}` }],
-        });
-      } catch {
-        throw new Error(
-          `This round lives on Ethereum Sepolia (${sepolia.id}); your wallet is on ` +
-          `chain ${parseInt(current, 16)}. Switch networks and try again.`,
-        );
-      }
-    }
-
-    const w = createWalletClient({ chain: sepolia, transport: custom(eth), account: addr });
-    setAccount(addr);
+    const w = await connectWallet(setStatus);
+    setAccount(w.account.address);
     return w;
   }
 
