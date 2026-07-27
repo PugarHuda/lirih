@@ -133,16 +133,21 @@ Gas, measured on the Nox Runner at K=8 projects (`test/bench.test.ts`):
 | `settle` (incl. forwarding donations to every project) | 2,008k | ~187k |
 
 `contribute` costs 2.05M on live Sepolia versus 2.60M on the local Runner. Each
-contribution is its own transaction, so the donor count is not bounded by the
-block gas limit; only the per-project loops are. `MAX_PROJECTS` is 64 → the
-finalize+allocate+settle path lands near 27M, which still fits a Sepolia block
-(60M limit at time of writing).
+contribution is its own transaction, so the donor count is never bounded by the
+block gas limit.
 
-The test suite is **16 passing** against the real Nox stack: encrypted-sqrt
+The per-project loops are not bounded either: `finalizeTallyPaged(n)` and
+`computeAllocationsPaged(n)` process a bounded slice and resume, advancing the
+phase only once the last project lands — a partial tally must never be visible
+to the next phase, because `sumMatch` is the divisor for every allocation. At 64
+projects the whole path is ~27M and fits a single Sepolia block anyway, but that
+is a property of today's gas limit rather than of the design.
+
+The test suite is **18 passing** against the real Nox stack: encrypted-sqrt
 exactness, the full round versus a plaintext QF oracle, the splitting property
-below, the gas benchmark, and twelve guard tests covering phase ordering, deadline
+below, the gas benchmark, and fourteen guard tests covering phase ordering, deadline
 enforcement, authorization, a forged decryption proof, an empty round, an
-underfunded pool, crowdfunded top-ups, and stranded-pool recovery.
+underfunded pool, crowdfunded top-ups, stranded-pool recovery, and resumable pagination.
 
 ## Splitting a donation buys no extra matching weight
 

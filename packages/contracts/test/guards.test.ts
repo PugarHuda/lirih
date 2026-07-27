@@ -186,4 +186,39 @@ describe('LirihRound guards', () => {
     assert.equal(await usdc.read.balanceOf([round.address]), 0n, 'round drained');
     assert.equal(await usdc.read.balanceOf([op.account.address]), before + M, 'operator repaid');
   });
+
+  // ── pagination ───────────────────────────────────────────────────────────
+
+  it('tallies and allocates across several transactions without advancing early', async () => {
+    const { round, usdc, conn, M } = await fixture();
+    await usdc.write.mint([round.address, M]);
+    for (const n of ['A', 'B', 'C']) await round.write.registerProject([SPLIT_ZERO, `project ${n}`]);
+    await timeTravel(conn, 21);
+
+    // One project at a time. The phase must NOT advance until the last one lands:
+    // sumMatch is the divisor for every allocation, so a partial tally leaking into
+    // the next phase would divide every project by an incomplete total.
+    await round.write.finalizeTallyPaged([1n]);
+    assert.equal(Number(await round.read.phase()), 0, 'still Contribution after 1 of 3');
+    assert.equal(await round.read.tallyCursor(), 1n);
+    await round.write.finalizeTallyPaged([1n]);
+    assert.equal(Number(await round.read.phase()), 0, 'still Contribution after 2 of 3');
+    await round.write.finalizeTallyPaged([1n]);
+    assert.equal(Number(await round.read.phase()), 1, 'Tallied only after the last one');
+    assert.equal(await round.read.tallyCursor(), 3n);
+
+    await round.write.computeAllocationsPaged([2n]);
+    assert.equal(Number(await round.read.phase()), 1, 'still Tallied after 2 of 3');
+    assert.equal(await round.read.allocCursor(), 2n);
+    await round.write.computeAllocationsPaged([5n]); // overshoot clamps to the end
+    assert.equal(Number(await round.read.phase()), 2, 'Allocated');
+    assert.equal(await round.read.allocCursor(), 3n);
+  });
+
+  it('rejects a zero page size instead of looping forever', async () => {
+    const { round, conn } = await fixture();
+    await round.write.registerProject([SPLIT_ZERO, 'p']);
+    await timeTravel(conn, 21);
+    await assert.rejects(() => round.write.finalizeTallyPaged([0n]), /maxCount = 0/);
+  });
 });

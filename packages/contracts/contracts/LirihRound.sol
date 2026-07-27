@@ -61,6 +61,12 @@ contract LirihRound is ReentrancyGuard {
     address public settledSplit;
     uint256 public revealedCount;
 
+    // How far the tally and allocation passes have got. Both are resumable, so a
+    // round with more projects than fit in one block can still be driven to
+    // completion — see finalizeTallyPaged.
+    uint256 public tallyCursor;
+    uint256 public allocCursor;
+
     // Donor's RUNNING TOTAL per project, viewer-granted so they can decrypt it in
     // their wallet (Snap) — the coercion-resistance path: you can see what you
     // gave, but can't prove it to anyone.
@@ -247,10 +253,27 @@ contract LirihRound is ReentrancyGuard {
     ///      could strand donor escrow in this contract forever. Any donor can
     ///      now push a round to completion; the caller just pays the gas.
     function finalizeTally() external {
+        _finalizeTally(type(uint256).max);
+    }
+
+    /// @notice Tally at most `maxCount` more projects. Resumable: call repeatedly
+    ///         until the phase flips to Tallied.
+    /// @dev Removes the block-gas ceiling on project count. Each project costs
+    ///      ~130k here, so ~64 projects fit one block comfortably today — but that
+    ///      is a property of the current limit, not of the design, and a round
+    ///      whose loop no longer fits would otherwise be permanently unfinishable.
+    function finalizeTallyPaged(uint256 maxCount) external {
+        _finalizeTally(maxCount);
+    }
+
+    function _finalizeTally(uint256 maxCount) internal {
         if (phase != Phase.Contribution) revert WrongPhase();
         if (block.timestamp <= contributionDeadline) revert DeadlineNotReached();
+        require(maxCount > 0, "maxCount = 0");
 
-        for (uint256 i; i < projects.length; ++i) {
+        uint256 end = tallyCursor + maxCount;
+        if (end > projects.length) end = projects.length;
+        for (uint256 i = tallyCursor; i < end; ++i) {
             Project storage p = projects[i];
             euint256 sq = Nox.mul(p.sumRoot, p.sumRoot);
             (, euint256 matchP) = Nox.safeSub(sq, p.sumC); // 0 if Cp > Sp²
@@ -259,27 +282,45 @@ contract LirihRound is ReentrancyGuard {
             sumMatch = Nox.add(sumMatch, matchP);
             Nox.allowThis(sumMatch);
         }
-        phase = Phase.Tallied;
+        tallyCursor = end;
+        // Only advance once EVERY project is tallied — sumMatch is the divisor for
+        // every allocation, so a partial tally must never be visible to the next phase.
+        if (end == projects.length) phase = Phase.Tallied;
     }
 
     /// @notice allocₚ = M·matchₚ/Σmatchₚ, marked publicly decryptable. Guarded
     ///         against Σmatchₚ == 0 (empty round) via select.
     /// @dev Permissionless — see the note on `finalizeTally`.
     function computeAllocations() external {
+        _computeAllocations(type(uint256).max);
+    }
+
+    /// @notice Allocate at most `maxCount` more projects. Resumable, like the tally.
+    function computeAllocationsPaged(uint256 maxCount) external {
+        _computeAllocations(maxCount);
+    }
+
+    function _computeAllocations(uint256 maxCount) internal {
         if (phase != Phase.Tallied) revert WrongPhase();
+        require(maxCount > 0, "maxCount = 0");
+        // sumMatch is final for the whole phase, so recomputing the divisor per page
+        // is safe — every page divides by exactly the same number.
         euint256 Menc = Nox.toEuint256(matchingPool);
         Nox.allowThis(Menc);
         ebool empty = Nox.eq(sumMatch, EZERO);
         euint256 denom = Nox.select(empty, EONE, sumMatch); // avoid div-by-zero saturation
 
-        for (uint256 i; i < projects.length; ++i) {
+        uint256 end = allocCursor + maxCount;
+        if (end > projects.length) end = projects.length;
+        for (uint256 i = allocCursor; i < end; ++i) {
             Project storage p = projects[i];
             euint256 alloc = Nox.div(Nox.mul(Menc, p.matchHandle), denom);
             p.allocHandle = alloc;
             Nox.allowThis(p.allocHandle);
             Nox.allowPublicDecryption(p.allocHandle);
         }
-        phase = Phase.Allocated;
+        allocCursor = end;
+        if (end == projects.length) phase = Phase.Allocated;
     }
 
     // ── Reveal (2-tx: off-chain publicDecrypt -> verify here) ──────────────────
