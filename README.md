@@ -96,7 +96,8 @@ Gas, measured on the Nox Runner at K=8 projects (`test/bench.test.ts`):
 
 | Step | Gas | Per project |
 |---|---|---|
-| `contribute` (one encrypted sqrt) | 2.60M | — |
+| `contribute`, donor's first gift to a project (one sqrt) | 2.64M | — |
+| `contribute`, same donor giving again (two sqrts — see below) | 4.73M | — |
 | `finalizeTally` | 1,037k | ~130k |
 | `computeAllocations` | 915k | ~114k |
 | `settle` (incl. forwarding donations to every project) | 2,008k | ~187k |
@@ -107,10 +108,25 @@ block gas limit; only the per-project loops are. `MAX_PROJECTS` is 64 → the
 finalize+allocate+settle path lands near 27M, which still fits a Sepolia block
 (60M limit at time of writing).
 
-The test suite is **12 passing** against the real Nox stack: encrypted-sqrt
-exactness, the full round versus a plaintext QF oracle, the gas benchmark, and
-nine guard tests covering phase ordering, deadline enforcement, authorization,
-a forged decryption proof, an empty round, and an underfunded pool.
+The test suite is **13 passing** against the real Nox stack: encrypted-sqrt
+exactness, the full round versus a plaintext QF oracle, the splitting property
+below, the gas benchmark, and nine guard tests covering phase ordering, deadline
+enforcement, authorization, a forged decryption proof, an empty round, and an
+underfunded pool.
+
+## Splitting a donation buys no extra matching weight
+
+Quadratic funding weights a project by `(Σ√cᵢ)²` where `i` ranges over **donors**,
+not over transactions. Take the root per transaction instead and one donor can
+split a gift across `N` transactions to multiply their own weight by `√N`, since
+`N·√(c/N) = √N·√c` — a sybil attack that needs no extra addresses at all.
+
+Lirih keeps an encrypted per-donor running total and swaps that donor's old root
+out for their new one, so the weight depends only on what each donor gave in
+total. `test/qf-semantics.test.ts` proves it: two projects with identical
+per-donor totals `{A: 8, B: 8}` receive exactly equal matching even when A pays
+one of them in two transactions. That second root is why a repeat contribution
+costs ~1.8× a first one; donors who give once never pay it.
 
 The only mock in the system is the ERC-20 faucet token (`MockUSDC`) standing in
 for USDC — the round, the Nox compute, and the 0xSplits V2 settlement are all

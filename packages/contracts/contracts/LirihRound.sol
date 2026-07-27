@@ -58,11 +58,16 @@ contract LirihRound is ReentrancyGuard {
     address public settledSplit;
     uint256 public revealedCount;
 
-    // Donor's own contribution handle, viewer-granted so they can decrypt it in
+    // Donor's RUNNING TOTAL per project, viewer-granted so they can decrypt it in
     // their wallet (Snap) — the coercion-resistance path: you can see what you
-    // gave, but can't prove it to anyone. ponytail: keeps the LATEST handle per
-    // (donor, project); accumulate if per-contribution history is ever needed.
+    // gave, but can't prove it to anyone.
     mapping(address => mapping(uint256 => euint256)) public myContribution;
+
+    // Whether this donor has already given to this project. Plaintext on purpose:
+    // participation is ALREADY public (the Contributed event names the donor and
+    // the project) — only amounts are secret. Knowing this in plaintext lets us
+    // skip a 164-op sqrt on a donor's first contribution.
+    mapping(address => mapping(uint256 => bool)) public hasGiven;
 
     Project[] public projects;
     euint256 internal sumMatch;
@@ -161,17 +166,31 @@ contract LirihRound is ReentrancyGuard {
         euint256 escrowed = cToken.confidentialTransferFrom(msg.sender, address(this), c);
         Nox.allowThis(escrowed);
 
-        // record the donor's own contribution handle + grant them decrypt rights
-        myContribution[msg.sender][projectId] = escrowed;
-        if (viewer != address(0)) Nox.addViewer(escrowed, viewer);
+        // QF weights a project by (Σ√cᵢ)² where i ranges over DONORS, not over
+        // transactions. Taking √ per transaction would let one donor split a
+        // donation across N txs and multiply their own weight by √N — a sybil
+        // attack needing no extra addresses. So we keep a per-donor running
+        // total, and swap that donor's OLD root out for their NEW one.
+        bool repeat = hasGiven[msg.sender][projectId];
+        euint256 prevTotal = repeat ? myContribution[msg.sender][projectId] : EZERO;
+        euint256 newTotal = repeat ? Nox.add(prevTotal, escrowed) : escrowed;
 
-        // Clamp the sqrt input to CONTRIB_CAP so the 41-bit search is always
-        // exact (can't `require(escrowed <= cap)` on an encrypted value). This
-        // doubles as a legitimate anti-whale QF weight cap; the full `escrowed`
-        // still counts toward sumC (raw contributions).
-        euint256 forSqrt = Nox.select(Nox.le(escrowed, ECAP), escrowed, ECAP);
-        euint256 root = Isqrt.sqrt(forSqrt, _bits(), EZERO);
-        p.sumRoot = Nox.add(p.sumRoot, root);
+        hasGiven[msg.sender][projectId] = true;
+        myContribution[msg.sender][projectId] = newTotal;
+        Nox.allowThis(newTotal);
+        if (viewer != address(0)) Nox.addViewer(newTotal, viewer);
+
+        euint256[] memory bits = _bits();
+        euint256 newRoot = Isqrt.sqrt(_clampForSqrt(newTotal), bits, EZERO);
+        if (repeat) {
+            // Invariant: p.sumRoot already contains prevRoot (we added it on this
+            // donor's previous contribution), so the plain sub cannot underflow.
+            // Costs a second 164-op sqrt — only for donors who give again.
+            euint256 prevRoot = Isqrt.sqrt(_clampForSqrt(prevTotal), bits, EZERO);
+            p.sumRoot = Nox.add(Nox.sub(p.sumRoot, prevRoot), newRoot);
+        } else {
+            p.sumRoot = Nox.add(p.sumRoot, newRoot);
+        }
         p.sumC = Nox.add(p.sumC, escrowed);
         Nox.allowThis(p.sumRoot); // MANDATORY: unlisted result handle dies next tx
         Nox.allowThis(p.sumC);
@@ -303,6 +322,14 @@ contract LirihRound is ReentrancyGuard {
     }
 
     // ── helpers ───────────────────────────────────────────────────────────────
+
+    /// @dev Clamp the sqrt input to CONTRIB_CAP so the 41-bit search is always
+    ///      exact — we cannot `require(x <= cap)` on an encrypted value. Doubles
+    ///      as a legitimate anti-whale QF weight cap; the full amount still
+    ///      counts toward sumC (raw contributions).
+    function _clampForSqrt(euint256 v) internal returns (euint256) {
+        return Nox.select(Nox.le(v, ECAP), v, ECAP);
+    }
 
     function _bits() internal view returns (euint256[] memory bits) {
         bits = new euint256[](SQRT_BITS);
