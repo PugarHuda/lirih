@@ -91,6 +91,8 @@ export const roundAbi = [
     outputs: [{ type: 'uint64' }] },
   { type: 'function', name: 'revealedCount', stateMutability: 'view', inputs: [],
     outputs: [{ type: 'uint256' }] },
+  { type: 'function', name: 'matchingPool', stateMutability: 'view', inputs: [],
+    outputs: [{ type: 'uint256' }] },
   { type: 'function', name: 'settledSplit', stateMutability: 'view', inputs: [],
     outputs: [{ type: 'address' }] },
   { type: 'function', name: 'projectCount', stateMutability: 'view', inputs: [],

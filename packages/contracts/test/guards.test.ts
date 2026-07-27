@@ -136,4 +136,54 @@ describe('LirihRound guards', () => {
     await round.write.computeAllocations();
     await assert.rejects(() => round.write.settle(), /pool underfunded/);
   });
+
+  // ── crowdfunded matching pool ────────────────────────────────────────────
+
+  it('lets anyone top up the matching pool while the round is open', async () => {
+    const { round, usdc, other, M } = await fixture();
+    const extra = parseEther('2500');
+    await usdc.write.mint([other.account.address, extra], { account: other.account });
+    await usdc.write.approve([round.address, extra], { account: other.account });
+    await round.write.fundPool([extra], { account: other.account });
+
+    assert.equal(await round.read.matchingPool(), M + extra, 'M grew by the top-up');
+    assert.equal(await usdc.read.balanceOf([round.address]), extra, 'tokens actually arrived');
+  });
+
+  it('refuses pool top-ups once contributions have closed', async () => {
+    const { round, usdc, conn, other } = await fixture();
+    const extra = parseEther('100');
+    await usdc.write.mint([other.account.address, extra], { account: other.account });
+    await usdc.write.approve([round.address, extra], { account: other.account });
+    await timeTravel(conn, 21);
+    // M is an input to the allocation maths; it must not move under a tally.
+    await assert.rejects(
+      () => round.write.fundPool([extra], { account: other.account }),
+      /DeadlinePassed/,
+    );
+  });
+
+  // ── stranded-pool recovery ───────────────────────────────────────────────
+
+  it('sweeps the pool only when settlement distributed nothing', async () => {
+    const { round, usdc, conn, op, other, M } = await fixture();
+    await usdc.write.mint([round.address, M]);
+    await timeTravel(conn, 21);
+    await round.write.finalizeTally();
+    await round.write.computeAllocations();
+    await round.write.settle();
+    // empty round -> no split was created -> the pool is stranded here
+    assert.equal(await round.read.settledSplit(), SPLIT_ZERO);
+
+    await assert.rejects(
+      () => round.write.sweepPool([other.account.address], { account: other.account }),
+      /NotOperator/,
+      'a stranger must not be able to drain the pool',
+    );
+
+    const before = await usdc.read.balanceOf([op.account.address]);
+    await round.write.sweepPool([op.account.address]);
+    assert.equal(await usdc.read.balanceOf([round.address]), 0n, 'round drained');
+    assert.equal(await usdc.read.balanceOf([op.account.address]), before + M, 'operator repaid');
+  });
 });

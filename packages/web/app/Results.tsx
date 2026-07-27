@@ -19,6 +19,7 @@ export default function Results({ projectId }: { projectId: number }) {
   const [mine, setMine] = useState<bigint>();
   const [error, setError] = useState('');
   const [deadline, setDeadline] = useState<number>();
+  const [pool, setPool] = useState<bigint>();
   const [split, setSplit] = useState<`0x${string}`>();
   const [advancing, setAdvancing] = useState(false);
   const [advNote, setAdvNote] = useState('');
@@ -91,6 +92,7 @@ export default function Results({ projectId }: { projectId: number }) {
       const ph = await pub.readContract({ address: ADDRESSES.round, abi: roundAbi, functionName: 'phase' });
       setPhase(Number(ph));
       setDeadline(Number(await pub.readContract({ address: ADDRESSES.round, abi: roundAbi, functionName: 'contributionDeadline' })));
+      setPool((await pub.readContract({ address: ADDRESSES.round, abi: roundAbi, functionName: 'matchingPool' })) as bigint);
       const s = await pub.readContract({ address: ADDRESSES.round, abi: roundAbi, functionName: 'settledSplit' });
       setSplit(s as `0x${string}`);
       const n = await pub.readContract({ address: ADDRESSES.round, abi: roundAbi, functionName: 'projectCount' });
@@ -204,6 +206,33 @@ export default function Results({ projectId }: { projectId: number }) {
           {advNote && <p style={{ fontSize: 13, color: '#456', marginTop: 8 }}>⏳ {advNote}</p>}
         </section>
       )}
+      {/* Verify the arithmetic yourself. Every number here is read from chain
+          state: the sum of the revealed allocations must equal the matching pool,
+          give or take the dust that integer division leaves behind. It is a small
+          check, but it is the difference between "the round says it paid out
+          correctly" and "you watched it add up". */}
+      {phase !== undefined && phase >= 2 && pool !== undefined && rows.every((r) => r.revealed) && rows.length > 0 && (() => {
+        const sum = rows.reduce((s, r) => s + r.alloc, 0n);
+        const dust = pool > sum ? pool - sum : sum - pool;
+        const ok = sum <= pool && dust < BigInt(rows.length + 1);
+        return (
+          <section style={{
+            marginTop: 16, padding: '12px 14px', borderRadius: 8, fontSize: 14,
+            background: ok ? '#f2f8f4' : '#fdecea',
+            border: `1px solid ${ok ? '#b9dcc6' : '#f5aca6'}`,
+          }}>
+            <b>{ok ? '✓ Allocations check out' : '⚠ Allocations do not add up'}</b>
+            <ul style={{ margin: '6px 0 0', paddingLeft: 18, lineHeight: 1.6 }}>
+              <li>sum of revealed allocations: {formatEther(sum)}</li>
+              <li>matching pool on-chain: {formatEther(pool)}</li>
+              <li>
+                unallocated remainder: {dust.toString()} wei
+                {ok && ' — integer-division dust, at most 1 wei per project'}
+              </li>
+            </ul>
+          </section>
+        );
+      })()}
       {phase === 3 && split && split !== `0x${'00'.repeat(20)}` && (
         <p style={{ marginTop: 16, fontSize: 14 }}>
           Settled through 0xSplits V2:{' '}

@@ -51,7 +51,10 @@ contract LirihRound is ReentrancyGuard {
     IERC7984 public immutable cToken;        // confidential donation token
     IERC20 public immutable matchingToken;   // plaintext token holding pool M
     ISplitFactoryV2 public immutable splitFactory;
-    uint256 public immutable matchingPool;   // M, public by design
+    // M, public by design. NOT immutable: anyone may top it up while the round is
+    // open (see fundPool), so a matching pool can itself be crowdfunded rather
+    // than depending on one sponsor deciding the number up front.
+    uint256 public matchingPool;
     uint64 public immutable contributionDeadline;
 
     Phase public phase;
@@ -81,6 +84,8 @@ contract LirihRound is ReentrancyGuard {
     event Contributed(uint256 indexed id, address indexed donor);
     event AllocationRevealed(uint256 indexed id, uint256 amount);
     event Settled(address split);
+    event PoolFunded(address indexed from, uint256 amount, uint256 newTotal);
+    event PoolSwept(address indexed to, uint256 amount);
 
     error NotOperator();
     error WrongPhase();
@@ -138,6 +143,39 @@ contract LirihRound is ReentrancyGuard {
         p.sumC = EZERO;
         p.exists = true;
         emit ProjectRegistered(id, payout, name);
+    }
+
+    /// @notice Top up the matching pool. Permissionless and open to anyone while
+    ///         the round is accepting contributions — the pool is public by
+    ///         design, so there is nothing to hide and no reason to gate it.
+    /// @dev Pulls `amount` of the PLAINTEXT matching token and raises M by exactly
+    ///      what arrived, so a fee-on-transfer token cannot inflate M beyond the
+    ///      balance actually held. Closed once contributions close, because M is
+    ///      an input to allocations and must not move under a computed tally.
+    function fundPool(uint256 amount) external {
+        if (phase != Phase.Contribution) revert WrongPhase();
+        if (block.timestamp > contributionDeadline) revert DeadlinePassed();
+        uint256 before = matchingToken.balanceOf(address(this));
+        require(matchingToken.transferFrom(msg.sender, address(this), amount), "transfer failed");
+        uint256 received = matchingToken.balanceOf(address(this)) - before;
+        matchingPool += received;
+        emit PoolFunded(msg.sender, received, matchingPool);
+    }
+
+    /// @notice Recover the matching pool when settlement could not distribute it.
+    /// @dev Only reachable in the all-whale case: every project's match was zero,
+    ///      so `settle` had no QF weights to divide by, created no split, and left
+    ///      the pool sitting here. `settledSplit == address(0)` is exactly that
+    ///      condition. Sends to the operator, who is whoever funded the round at
+    ///      construction. This closes the one path where funds could be stranded
+    ///      permanently — the counterpart to making the pipeline permissionless.
+    function sweepPool(address to) external onlyOperator {
+        if (phase != Phase.Settled) revert WrongPhase();
+        require(settledSplit == address(0), "pool was distributed");
+        uint256 amount = matchingToken.balanceOf(address(this));
+        require(amount > 0, "nothing to sweep");
+        require(matchingToken.transfer(to, amount), "transfer failed");
+        emit PoolSwept(to, amount);
     }
 
     // ── Contribution ──────────────────────────────────────────────────────────

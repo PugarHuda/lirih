@@ -138,11 +138,11 @@ block gas limit; only the per-project loops are. `MAX_PROJECTS` is 64 → the
 finalize+allocate+settle path lands near 27M, which still fits a Sepolia block
 (60M limit at time of writing).
 
-The test suite is **13 passing** against the real Nox stack: encrypted-sqrt
+The test suite is **16 passing** against the real Nox stack: encrypted-sqrt
 exactness, the full round versus a plaintext QF oracle, the splitting property
-below, the gas benchmark, and nine guard tests covering phase ordering, deadline
-enforcement, authorization, a forged decryption proof, an empty round, and an
-underfunded pool.
+below, the gas benchmark, and twelve guard tests covering phase ordering, deadline
+enforcement, authorization, a forged decryption proof, an empty round, an
+underfunded pool, crowdfunded top-ups, and stranded-pool recovery.
 
 ## Splitting a donation buys no extra matching weight
 
@@ -184,3 +184,25 @@ npx hardhat verify sourcify --network sepolia <address> <constructor args…>
 Sourcify needs no API key. Note that its task ignores `--constructor-args-path`
 (it resolves libraries only), so a constructor taking an array cannot be
 expressed there — use `verify blockscout` for those.
+
+## Anyone can fund the pool; nothing can be stranded
+
+`fundPool()` is permissionless while the round is open, so the matching pool can
+itself be crowdfunded rather than fixed by one sponsor at deployment. It credits
+only what actually arrives, so a fee-on-transfer token cannot inflate `M` past
+the balance really held, and it closes at the contribution deadline because `M`
+is an input to the allocation maths and must not move under a computed tally.
+
+`sweepPool()` closes the one remaining path to permanently stranded funds. In an
+all-whale round every project's match is zero, so `settle` has no weights to
+divide by, creates no split, and leaves the pool sitting in the contract —
+`settledSplit == address(0)` is exactly that condition, and only then can the
+operator recover it. Together with the permissionless pipeline, there is now no
+state in which donor money or the matching pool can be locked forever.
+
+## Check the arithmetic yourself
+
+Once a round is allocated, the results panel sums the revealed allocations and
+compares them against the on-chain matching pool, showing the unallocated
+remainder in wei. Correct settlement leaves at most one wei per project, the dust
+integer division cannot avoid. On the settled round above it reads exactly zero.
