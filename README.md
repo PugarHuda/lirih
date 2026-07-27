@@ -143,9 +143,9 @@ to the next phase, because `sumMatch` is the divisor for every allocation. At 64
 projects the whole path is ~27M and fits a single Sepolia block anyway, but that
 is a property of today's gas limit rather than of the design.
 
-The test suite is **18 passing** against the real Nox stack: encrypted-sqrt
+The test suite is **19 passing** against the real Nox stack: encrypted-sqrt
 exactness, the full round versus a plaintext QF oracle, the splitting property
-below, the gas benchmark, and fourteen guard tests covering phase ordering, deadline
+below, the gas benchmark, and fifteen guard tests covering phase ordering, deadline
 enforcement, authorization, a forged decryption proof, an empty round, an
 underfunded pool, crowdfunded top-ups, stranded-pool recovery, and resumable pagination.
 

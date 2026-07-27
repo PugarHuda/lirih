@@ -25,9 +25,10 @@ import {ISplitFactoryV2, IPushSplit, Split} from "./ISplitFactoryV2.sol";
 contract LirihRound is ReentrancyGuard {
     uint256 internal constant SQRT_BITS = 41; // √(1e24) < 2^41; see reference/
     uint256 internal constant CONTRIB_CAP = 1e24; // 1M tokens @18dp; sqrt-domain bound
-    // ponytail: hard cap bounds the finalizeTally/computeAllocations loop gas.
-    // A budgeting round has tens of teams, not thousands. Upgrade path if ever
-    // needed: paginate finalizeTally(from,to) / computeAllocations(from,to).
+    // Sanity bound only. The gas argument for it is gone — finalizeTallyPaged and
+    // computeAllocationsPaged make both loops resumable — but an unbounded project
+    // list still makes `settle` build one array the Splits factory has to accept in
+    // a single call, so a ceiling stays.
     uint256 internal constant MAX_PROJECTS = 64;
 
     enum Phase { Contribution, Tallied, Allocated, Settled }
@@ -40,6 +41,10 @@ contract LirihRound is ReentrancyGuard {
         euint256 allocHandle;  // M·matchₚ/Σmatchₚ (public-decryptable after Allocated)
         uint256 revealedAlloc; // filled by revealAllocation()
         bool revealed;
+        // Retained deliberately even though nothing reads it any more: it sits at
+        // tuple index 7 of the generated `projects(uint256)` getter, and removing
+        // it would shift `name` down an index and break every caller decoding an
+        // already-deployed round. Storage layout is an interface.
         bool exists;
         // Appended LAST on purpose: the auto-generated `projects(uint256)` getter
         // returns members in declaration order, so adding this at the end keeps
@@ -97,7 +102,6 @@ contract LirihRound is ReentrancyGuard {
     error WrongPhase();
     error DeadlineNotReached();
     error DeadlinePassed();
-    error UnknownProject();
     error BadDecryption();
 
     modifier onlyOperator() {
@@ -203,7 +207,6 @@ contract LirihRound is ReentrancyGuard {
         if (phase != Phase.Contribution) revert WrongPhase();
         if (block.timestamp > contributionDeadline) revert DeadlinePassed();
         Project storage p = projects[projectId];
-        if (!p.exists) revert UnknownProject();
 
         euint256 c = Nox.fromExternal(encAmount, proof);
         Nox.allowTransient(c, address(cToken)); // let the token spend this handle
@@ -333,7 +336,6 @@ contract LirihRound is ReentrancyGuard {
     {
         if (phase != Phase.Allocated) revert WrongPhase();
         Project storage p = projects[projectId];
-        if (!p.exists) revert UnknownProject();
         if (p.revealed) return;
         if (Nox.publicDecrypt(p.allocHandle, decryptionProof) != amount) revert BadDecryption();
         p.revealedAlloc = amount;

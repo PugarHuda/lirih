@@ -221,4 +221,32 @@ describe('LirihRound guards', () => {
     await timeTravel(conn, 21);
     await assert.rejects(() => round.write.finalizeTallyPaged([0n]), /maxCount = 0/);
   });
+
+  // Is UnknownProject reachable at all? `projects[id]` bounds-checks first, so an
+  // out-of-range id panics (0x32) long before the `exists` flag is read, and every
+  // in-range project has exists == true by construction. If both assertions below
+  // hold, the error is dead code.
+  it('bounds-checks project ids before the exists flag is ever consulted', async () => {
+    const { round, conn, op } = await fixture();
+    await round.write.registerProject([SPLIT_ZERO, 'only project']);
+
+    await assert.rejects(
+      () => round.write.contribute([99n, `0x${'00'.repeat(32)}`, '0x', op.account.address]),
+      (e: Error) => {
+        assert.ok(!/UnknownProject/.test(e.message), 'panics on bounds, never UnknownProject');
+        return true;
+      },
+    );
+
+    await timeTravel(conn, 21);
+    await round.write.finalizeTally();
+    await round.write.computeAllocations();
+    await assert.rejects(
+      () => round.write.revealAllocation([99n, 1n, '0x']),
+      (e: Error) => {
+        assert.ok(!/UnknownProject/.test(e.message), 'panics on bounds, never UnknownProject');
+        return true;
+      },
+    );
+  });
 });
