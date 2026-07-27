@@ -165,3 +165,22 @@ real contracts on Sepolia.
 ## License
 
 MIT
+
+## Verified source
+
+Every deployed contract is source-verified, so the code above can be read on-chain
+rather than taken on trust:
+
+| Contract | Verified |
+|---|---|
+| LirihRound | [Sourcify](https://sourcify.dev/server/repo-ui/11155111/0x3627a23a2a1d767ec993d96c9ed3dd4aad9c84b2) |
+| cUSDC | [Sourcify](https://sourcify.dev/server/repo-ui/11155111/0xf7f2ef8372e50b332127695193571a4ca61bc515) |
+| MockUSDC | [Sourcify](https://sourcify.dev/server/repo-ui/11155111/0xed5bb1f73119445e45d85e4b7f44fae4f78e455e) |
+
+```bash
+npx hardhat verify sourcify --network sepolia <address> <constructor args…>
+```
+
+Sourcify needs no API key. Note that its task ignores `--constructor-args-path`
+(it resolves libraries only), so a constructor taking an array cannot be
+expressed there — use `verify blockscout` for those.
