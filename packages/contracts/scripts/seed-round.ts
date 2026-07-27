@@ -9,25 +9,56 @@
 //   project 2: 2 donors x 100  -> S=2e10, C=200e18 -> match = 4e20-2e20 = 2e20
 // Project 1 raises the MOST money (900) and earns ZERO matching, because it all
 // came from one address. Expected split of the 10k pool: 7500 / 0 / 2500.
-import { createWalletClient, createPublicClient, http, parseEther, formatEther, toHex } from 'viem';
-import { privateKeyToAccount, mnemonicToAccount } from 'viem/accounts';
+import { createWalletClient, createPublicClient, http, parseEther, formatEther, keccak256, toHex } from 'viem';
+import { privateKeyToAccount } from 'viem/accounts';
 import { sepolia } from 'viem/chains';
 import { donate } from './donate.ts';
 
-// Well-known public test mnemonic (hardhat/anvil default). Demo donor keys are
-// intentionally public — these are throwaway testnet identities, and using
-// indexes 4..6 keeps them distinct from the 1..3 grantee payout addresses.
-const MNEMONIC = 'test test test test test test test test test test test junk';
-const DONOR_INDEXES = [4, 5, 6];
-const GAS_FLOOR = parseEther('0.004');   // ~1 contribute (2.05M gas) of headroom
-const GAS_TOPUP = parseEther('0.012');   // enough for 2 donations each
+// ⚠️ NEVER fund the well-known hardhat/anvil test accounts on a PUBLIC testnet.
+// Their private keys are public, so sweeper bots empty them within seconds —
+// account #4 (0x15d34AAf…) is sitting on nonce 30,000+ from exactly that. An
+// earlier version of this script used that mnemonic and lost 0.036 Sepolia ETH
+// instantly; the funding looked like it "silently failed" because the balance
+// was gone before the next transaction was built.
+//
+// Donor keys are therefore derived from the DEPLOYER's key, so they are
+// reproducible across runs (no extra secrets to store) but not publicly known.
+const donorKeyFor = (funderKey: string, i: number) =>
+  keccak256(toHex(`${funderKey}:lirih-donor:${i}`)) as `0x${string}`;
 
-// [projectId, donorSlot, wholeTokens]
-const PLAN: [number, number, string][] = [
+// LEAN=1 is the faucet-budget version: 2 projects, 3 contributions, and the
+// FUNDER itself is donor 0 — so only ONE extra address needs gas, and no ETH is
+// stranded in wallets we never use again. It still makes the whole QF argument:
+// project 0 is funded by a crowd of two, project 1 by a single whale giving MORE
+// money, and the whale still earns zero matching.
+// Full version: 3 projects, 6 contributions, 3 funded donors.
+const LEAN = process.env.LEAN === '1';
+
+const DONOR_INDEXES = LEAN ? [4] : [4, 5, 6];
+
+// Fund each donor UP TO this, and sweep the remainder back afterwards.
+//
+// Size it against the RESERVE, not the expected bill: a sender must be able to
+// cover `gasLimit * maxFeePerGas`, even though it only ever pays
+// `gasUsed * (baseFee + tip)`. A 2.6M-gas contribute at the 3 gwei ceiling
+// reserves ~0.008 ETH while actually costing ~0.0027. Budgeting for the real
+// cost gets the transaction rejected before it is ever mined, and the rejection
+// surfaces as a bare "execution reverted" with no revert data.
+const GAS_TARGET = parseEther(LEAN ? '0.0095' : '0.025');
+
+// [projectId, donorSlot, wholeTokens]; slot -1 means the funder itself.
+const LEAN_PLAN: [number, number, string][] = [
+  [0, -1, '100'], [0, 0, '100'],  // crowd of two -> earns the matching
+  [1, -1, '900'], //  one whale, 4.5x the money, zero matching
+];
+
+const FULL_PLAN: [number, number, string][] = [
   [0, 0, '100'], [0, 1, '100'], [0, 2, '100'],
   [1, 0, '900'],
   [2, 1, '100'], [2, 2, '100'],
 ];
+
+const PLAN = LEAN ? LEAN_PLAN : FULL_PLAN;
 
 const env = (k: string) => {
   const v = process.env[k];
@@ -45,34 +76,100 @@ async function main() {
   const funder = privateKeyToAccount(env('DEPLOYER_PRIVATE_KEY') as `0x${string}`);
   const funderWallet = createWalletClient({ account: funder, chain: sepolia, transport });
 
-  const donors = DONOR_INDEXES.map((addressIndex) => {
-    const hd = mnemonicToAccount(MNEMONIC, { addressIndex });
-    return { address: hd.address, key: toHex(hd.getHdKey().privateKey!) as `0x${string}` };
+  // Fail fast if the window is already shut, or too tight to finish in. Each
+  // contribution needs a gateway round trip plus ~5 transactions, so budget
+  // generously — discovering DeadlinePassed halfway through wastes the gas of
+  // every contribution that already landed, and the round cannot be reopened.
+  const roundAbi = [{ type: 'function', name: 'contributionDeadline', stateMutability: 'view',
+    inputs: [], outputs: [{ type: 'uint64' }] }] as const;
+  const deadline = Number(await pub.readContract({ address: round, abi: roundAbi, functionName: 'contributionDeadline' }));
+  const chainNow = Number((await pub.getBlock()).timestamp);
+  const left = deadline - chainNow;
+  const needed = 90 * PLAN.length;
+  if (left <= 0) {
+    throw new Error(`round ${round} closed ${-left}s ago — redeploy, it cannot be reopened`);
+  }
+  if (left < needed) {
+    throw new Error(
+      `only ${left}s left on the contribution window but ~${needed}s needed for ` +
+      `${PLAN.length} contributions. Redeploy with a longer CONTRIB_WINDOW_SECS.`,
+    );
+  }
+  console.log(`window: ${left}s left (need ~${needed}s)`);
+
+  const donors = DONOR_INDEXES.map((i) => {
+    const key = donorKeyFor(env('DEPLOYER_PRIVATE_KEY'), i);
+    return { address: privateKeyToAccount(key).address, key };
   });
   donors.forEach((d, i) => console.log(`donor ${i}: ${d.address}`));
   console.log(`funder : ${funder.address} (${formatEther(await pub.getBalance({ address: funder.address }))} ETH)`);
 
-  // top up only what's needed — re-runs shouldn't re-drain the funder
+  // top up only the shortfall — re-runs shouldn't re-drain the funder
   for (const [i, d] of donors.entries()) {
     const bal = await pub.getBalance({ address: d.address });
-    if (bal >= GAS_FLOOR) {
+    if (bal >= GAS_TARGET) {
       console.log(`donor ${i} funded (${formatEther(bal)} ETH), skipping topup`);
       continue;
     }
-    const hash = await funderWallet.sendTransaction({ to: d.address, value: GAS_TOPUP });
+    const hash = await funderWallet.sendTransaction({ to: d.address, value: GAS_TARGET - bal });
     await pub.waitForTransactionReceipt({ hash });
-    console.log(`donor ${i} topped up to ${formatEther(GAS_TOPUP)} ETH`);
+    // Confirm the ETH is actually THERE. A receipt only proves the transfer was
+    // mined, not that the balance survived — funding a publicly-known key gets
+    // swept by bots between this transaction and the next one, which reads as a
+    // baffling "insufficient funds" much later instead of an error here.
+    const after = await pub.getBalance({ address: d.address });
+    if (after < GAS_TARGET / 2n) {
+      throw new Error(
+        `donor ${i} (${d.address}) shows ${formatEther(after)} ETH right after being sent ` +
+        `${formatEther(GAS_TOPUP)}. The funds were swept — is this a publicly-known key?`,
+      );
+    }
+    console.log(`donor ${i} topped up: ${formatEther(after)} ETH`);
   }
 
   // Sequential on purpose: each donor's wrap/contribute reads state its own
   // previous tx wrote, and the Nox gateway rate-limits concurrent encryptInput.
-  for (const [projectId, slot, tokens] of PLAN) {
-    console.log(`\n--- project ${projectId} <- donor ${slot} (${tokens}) ---`);
+  // Contributions are irreversible and expensive, so a mid-run failure must be
+  // resumable: START_AT skips steps that already landed. Re-running them would
+  // not just waste gas — a second gift to the SAME project is a repeat
+  // contribution, which costs a second sqrt AND changes that donor's total.
+  const startAt = Number(process.env.START_AT ?? 0);
+  const funderKey = env('DEPLOYER_PRIVATE_KEY') as `0x${string}`;
+  for (const [idx, [projectId, slot, tokens]] of PLAN.entries()) {
+    const who = slot < 0 ? 'funder' : `donor ${slot}`;
+    if (idx < startAt) {
+      console.log(`\n--- [${idx}] SKIPPED (START_AT=${startAt}): project ${projectId} <- ${who} (${tokens})`);
+      continue;
+    }
+    console.log(`\n--- [${idx}] project ${projectId} <- ${who} (${tokens}) ---`);
     await donate({
-      key: donors[slot].key, round, cusdc, musdc,
+      key: slot < 0 ? funderKey : donors[slot].key,
+      round, cusdc, musdc,
       projectId: BigInt(projectId), amount: parseEther(tokens),
     });
   }
+  // Return each donor's unspent ETH. Donors are over-funded on purpose (see
+  // GAS_TARGET), so without this the surplus is stranded in throwaway wallets —
+  // which matters on a faucet budget. Best-effort: a failed sweep must not fail
+  // the seeding that already succeeded.
+  console.log('\nsweeping unspent donor gas back to the funder…');
+  for (const [i, d] of donors.entries()) {
+    try {
+      const bal = await pub.getBalance({ address: d.address });
+      // Hold back gasLimit * maxFeePerGas, NOT the expected fee — the sender must
+      // cover the ceiling or the transfer is rejected outright. Mirrors the
+      // GAS_TARGET reasoning above; getting it wrong here just fails the sweep.
+      const cost = 21_000n * 3_000_000_000n; // 21k gas at the 3 gwei ceiling
+      if (bal <= cost) { console.log(`  donor ${i}: ${formatEther(bal)} ETH, not worth sweeping`); continue; }
+      const w = createWalletClient({ account: privateKeyToAccount(d.key), chain: sepolia, transport });
+      const hash = await w.sendTransaction({ to: funder.address, value: bal - cost });
+      await pub.waitForTransactionReceipt({ hash });
+      console.log(`  donor ${i}: returned ${formatEther(bal - cost)} ETH`);
+    } catch (e) {
+      console.log(`  donor ${i}: sweep failed (${(e as Error).message.split('\n')[0]}) — funds remain in ${d.address}`);
+    }
+  }
+  console.log(`funder now: ${formatEther(await pub.getBalance({ address: funder.address }))} ETH`);
   console.log('\nseeded. run scripts/run-round.ts after the contribution deadline.');
 }
 

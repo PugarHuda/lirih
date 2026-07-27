@@ -6,7 +6,7 @@ import { useState } from 'react';
 import { createWalletClient, custom, parseEther } from 'viem';
 import { sepolia } from 'viem/chains';
 import { encryptDonation } from '../lib/nox';
-import { ADDRESSES, roundAbi, cusdcAbi, musdcAbi, tx } from '../lib/lirih';
+import { ADDRESSES, roundAbi, cusdcAbi, musdcAbi, tx, explorerTx } from '../lib/lirih';
 import { connectSnap, getNoxAddress } from '../lib/snap';
 import Results from './Results';
 
@@ -20,10 +20,57 @@ export default function Home() {
   const [projectId, setProjectId] = useState('0');
   const [status, setStatus] = useState('');
   const [viewerMode, setViewerMode] = useState<ViewerMode>();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [hashes, setHashes] = useState<{ label: string; hash: `0x${string}` }[]>([]);
 
+  /// Every button goes through here: one place that disables input while a
+  /// multi-transaction flow is mid-flight, and one place that SHOWS failures.
+  /// Without it a throw (wrong network, user rejection, revert) disappeared into
+  /// an unhandled promise rejection and the page just sat there.
+  async function run(fn: () => Promise<void>) {
+    if (busy) return;
+    setBusy(true);
+    setError('');
+    try {
+      await fn();
+    } catch (e) {
+      const msg = (e as Error)?.message ?? String(e);
+      setError(/User rejected|denied/i.test(msg) ? 'Cancelled in wallet.' : msg.split('\n')[0]);
+      setStatus('');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const track = (label: string) => (hash: `0x${string}`) =>
+    setHashes((h) => [...h, { label, hash }]);
+
+  /// Connect, and make sure we are actually on Sepolia first. Without this the
+  /// wallet happily signs against whatever network it is on and every call
+  /// reverts against an address that holds no code — which reads as "the dApp is
+  /// broken" rather than "you are on the wrong chain".
   async function wallet() {
     const eth = (window as any).ethereum;
+    if (!eth) throw new Error('No injected wallet found — install MetaMask.');
     const [addr] = (await eth.request({ method: 'eth_requestAccounts' })) as `0x${string}`[];
+
+    const current = (await eth.request({ method: 'eth_chainId' })) as string;
+    if (parseInt(current, 16) !== sepolia.id) {
+      setStatus(`wrong network — switching to Sepolia…`);
+      try {
+        await eth.request({
+          method: 'wallet_switchEthereumChain',
+          params: [{ chainId: `0x${sepolia.id.toString(16)}` }],
+        });
+      } catch {
+        throw new Error(
+          `This round lives on Ethereum Sepolia (${sepolia.id}); your wallet is on ` +
+          `chain ${parseInt(current, 16)}. Switch networks and try again.`,
+        );
+      }
+    }
+
     const w = createWalletClient({ chain: sepolia, transport: custom(eth), account: addr });
     setAccount(addr);
     return w;
@@ -33,15 +80,15 @@ export default function Home() {
     const w = await wallet();
     const amt = parseEther(amount);
     const me = w.account!.address;
-    setStatus('minting mUSDC…');
-    await tx(w, { address: ADDRESSES.musdc, abi: musdcAbi, functionName: 'mint', args: [me, amt], chain: sepolia, account: me });
-    setStatus('approving wrapper…');
-    await tx(w, { address: ADDRESSES.musdc, abi: musdcAbi, functionName: 'approve', args: [ADDRESSES.cusdc, amt], chain: sepolia, account: me });
-    setStatus('wrapping to cUSDC…');
-    await tx(w, { address: ADDRESSES.cusdc, abi: cusdcAbi, functionName: 'wrap', args: [me, amt], chain: sepolia, account: me });
-    setStatus('authorizing round as operator…');
+    setStatus('1/4 minting mUSDC…');
+    await tx(w, { address: ADDRESSES.musdc, abi: musdcAbi, functionName: 'mint', args: [me, amt], chain: sepolia, account: me }, track('mint'));
+    setStatus('2/4 approving wrapper…');
+    await tx(w, { address: ADDRESSES.musdc, abi: musdcAbi, functionName: 'approve', args: [ADDRESSES.cusdc, amt], chain: sepolia, account: me }, track('approve'));
+    setStatus('3/4 wrapping to cUSDC (this amount IS public — only what you do next is private)…');
+    await tx(w, { address: ADDRESSES.cusdc, abi: cusdcAbi, functionName: 'wrap', args: [me, amt], chain: sepolia, account: me }, track('wrap'));
+    setStatus('4/4 authorizing round as operator…');
     const until = Math.floor(Date.now() / 1000) + 3600;
-    await tx(w, { address: ADDRESSES.cusdc, abi: cusdcAbi, functionName: 'setOperator', args: [ADDRESSES.round, until], chain: sepolia, account: me });
+    await tx(w, { address: ADDRESSES.cusdc, abi: cusdcAbi, functionName: 'setOperator', args: [ADDRESSES.round, until], chain: sepolia, account: me }, track('setOperator'));
     setStatus('ready to donate');
   }
 
@@ -63,14 +110,14 @@ export default function Home() {
     } catch { /* snap unavailable — fall back, but say so */ }
     setViewerMode(mode);
 
-    setStatus('encrypting amount (Nox)…');
+    setStatus('encrypting amount inside the Nox gateway TEE…');
     const { handle, handleProof } = await encryptDonation(w, parseEther(amount), ADDRESSES.round);
-    setStatus('submitting confidential contribution…');
+    setStatus('submitting confidential contribution (calldata carries a 32-byte handle, not your amount)…');
     await tx(w, {
       address: ADDRESSES.round, abi: roundAbi, functionName: 'contribute',
       args: [BigInt(projectId), handle as `0x${string}`, handleProof, viewer],
       chain: sepolia, account: w.account!.address,
-    });
+    }, track('contribute'));
     setStatus('done — your amount is encrypted on-chain (calldata is a 32-byte handle)');
   }
 
@@ -82,10 +129,36 @@ export default function Home() {
       <label>Amount (mUSDC): <input value={amount} onChange={(e) => setAmount(e.target.value)} /></label><br />
       <label>Project id: <input value={projectId} onChange={(e) => setProjectId(e.target.value)} /></label>
       <div style={{ marginTop: 16, display: 'flex', gap: 8 }}>
-        <button onClick={faucetAndWrap}>1 · Faucet + wrap + authorize</button>
-        <button onClick={donate}>2 · Donate (encrypted)</button>
+        <button disabled={busy} onClick={() => run(faucetAndWrap)}>
+          1 · Faucet + wrap + authorize
+        </button>
+        <button disabled={busy} onClick={() => run(donate)}>
+          2 · Donate (encrypted)
+        </button>
       </div>
-      <p style={{ marginTop: 16, color: '#555' }}>{status}</p>
+      {status && (
+        <p style={{ marginTop: 16, color: '#555' }}>
+          {busy && <span aria-hidden> ⏳ </span>}{status}
+        </p>
+      )}
+      {error && (
+        <p role="alert" style={{
+          marginTop: 12, padding: '8px 12px', borderRadius: 6, fontSize: 14,
+          background: '#fdecea', border: '1px solid #f5aca6',
+        }}>{error}</p>
+      )}
+      {hashes.length > 0 && (
+        <ul style={{ marginTop: 12, fontSize: 13, paddingLeft: 18 }}>
+          {hashes.map(({ label, hash }) => (
+            <li key={hash}>
+              {label}:{' '}
+              <a href={explorerTx(hash)} target="_blank" rel="noreferrer">
+                {hash.slice(0, 10)}…
+              </a>
+            </li>
+          ))}
+        </ul>
+      )}
       {viewerMode && (
         <p style={{
           marginTop: 8, padding: '8px 12px', borderRadius: 6, fontSize: 14,

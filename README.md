@@ -77,6 +77,36 @@ binary search (proven exact over `[0, 1e24]` in `reference/`), and the
 contribution domain cap lets it run in 41 bits (164 encrypted ops) instead of
 128. Full write-up in [`feedback.md`](./feedback.md).
 
+## A complete round, settled on Ethereum Sepolia
+
+Round [`0x3627a23a…`](https://sepolia.etherscan.io/address/0x3627a23a2a1d767ec993d96c9ed3dd4aad9c84b2)
+ran end to end on 2026-07-27 — encrypted contributions, QF computed under
+encryption, allocations revealed by gateway-signed proof, settled into a real
+[0xSplits V2](https://sepolia.etherscan.io/address/0xA59b26EEe6234c99aE9ce3e1242ce1d2D3175Ff6)
+PushSplit:
+
+| Project | Raised | Donors | Matching received |
+|---|---|---|---|
+| Clean Water Initiative | 200 | **two** | **9,999.999999… mUSDC** |
+| Open Source Maintainers | **900** | one | **0** |
+
+**The whale raised 4.5× more money and earned zero matching.** That is quadratic
+funding doing its job, and at no point was any individual donation amount public
+— only the two final allocations were ever decrypted.
+
+Both projects also hold non-zero **encrypted** cUSDC balances: the escrowed
+donations were forwarded confidentially, so even the per-project raw totals stay
+private. Operator flow gas: `finalizeTally` 287k · `computeAllocations` 262k ·
+`revealAllocation` 99k/62k · `settle` 640k.
+
+| Contract | Address |
+|---|---|
+| LirihRound | `0x3627a23a2a1d767ec993d96c9ed3dd4aad9c84b2` |
+| cUSDC (ERC-7984) | `0xf7f2ef8372e50b332127695193571a4ca61bc515` |
+| MockUSDC | `0xed5bb1f73119445e45d85e4b7f44fae4f78e455e` |
+| 0xSplits V2 PushSplit (created by settle) | `0xA59b26EEe6234c99aE9ce3e1242ce1d2D3175Ff6` |
+| PushSplitFactory V2.2 (unmodified, upstream) | `0x8E8eB0cC6AE34A38B67D5Cf91ACa38f60bc3Ecf4` |
+
 ## Verified against live Nox on Ethereum Sepolia
 
 No mock data on the confidential path — these are measured numbers from the live

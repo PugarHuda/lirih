@@ -16,11 +16,21 @@ export const pub = createPublicClient({
   transport: http(process.env.NEXT_PUBLIC_RPC),
 });
 
+export const explorerTx = (hash: string) => `https://sepolia.etherscan.io/tx/${hash}`;
+export const explorerAddr = (a: string) => `https://sepolia.etherscan.io/address/${a}`;
+
 /// Send a write and WAIT for the receipt. Mandatory here: the donate flow is
 /// mint -> approve -> wrap -> setOperator, and each step reads the state the
 /// previous one wrote. Firing them without awaiting reverts on the wrapper.
-export async function tx(w: WalletClient, req: Parameters<WalletClient['writeContract']>[0]) {
+/// `onHash` fires as soon as the hash exists, so the UI can link the pending tx
+/// instead of freezing for the ~15s until it confirms.
+export async function tx(
+  w: WalletClient,
+  req: Parameters<WalletClient['writeContract']>[0],
+  onHash?: (hash: `0x${string}`) => void,
+) {
   const hash = await w.writeContract(req);
+  onHash?.(hash);
   const rc = await pub.waitForTransactionReceipt({ hash });
   if (rc.status !== 'success') throw new Error(`tx reverted: ${hash}`);
   return hash;

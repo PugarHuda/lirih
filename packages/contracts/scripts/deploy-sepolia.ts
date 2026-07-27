@@ -15,22 +15,51 @@ const CONTRIB_WINDOW_SECS = Number(process.env.CONTRIB_WINDOW_SECS ?? 60 * 60);
 // publicly verifiable addresses — the split that pays them is the live 0xSplits V2.
 // Names live on-chain so the frontend reads real state instead of a hardcoded
 // label map; grantee identity is public by design (only amounts are secret).
-const PROJECTS: { payout: `0x${string}`; name: string }[] = [
+const ALL_PROJECTS: { payout: `0x${string}`; name: string }[] = [
   { payout: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8', name: 'Clean Water Initiative' },
   { payout: '0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC', name: 'Open Source Maintainers' },
   { payout: '0x90F79bf6EB2c4f870365E785982E1f101E93b906', name: 'Neighbourhood Clinic' },
 ];
+
+// LEAN=1 registers only the two projects the QF argument actually needs (a
+// crowd-funded one and a whale-funded one). Every project costs gas twice over:
+// once to register, then again in each of finalizeTally / computeAllocations /
+// settle. Pair with LEAN=1 on seed-round.ts.
+const PROJECTS = process.env.LEAN === '1' ? ALL_PROJECTS.slice(0, 2) : ALL_PROJECTS;
 
 async function main() {
   const { viem } = await network.connect({ network: 'sepolia', chainType: 'op' });
   const [wallet] = await viem.getWalletClients();
   console.log('deployer:', wallet.account.address);
 
-  const usdc = await viem.deployContract('MockUSDC');
-  console.log('MockUSDC:', usdc.address);
+  // The tokens are plain and rarely change, while LirihRound changes every time
+  // the QF logic does. Redeploying all three costs ~8.8M gas; reusing the live
+  // tokens and redeploying only the round costs ~4.3M. On a faucet budget that
+  // is the difference between one demo run and two.
+  //   REUSE_MUSDC=0x… REUSE_CUSDC=0x… npx hardhat run scripts/deploy-sepolia.ts --network sepolia
+  const reuseM = process.env.REUSE_MUSDC as `0x${string}` | undefined;
+  const reuseC = process.env.REUSE_CUSDC as `0x${string}` | undefined;
+  if (!!reuseM !== !!reuseC) throw new Error('set BOTH REUSE_MUSDC and REUSE_CUSDC, or neither');
 
-  const cusdc = await viem.deployContract('cUSDC', [usdc.address]);
-  console.log('cUSDC   :', cusdc.address);
+  const usdc = reuseM
+    ? await viem.getContractAt('MockUSDC', reuseM)
+    : await viem.deployContract('MockUSDC');
+  console.log(`MockUSDC: ${usdc.address}${reuseM ? ' (reused)' : ''}`);
+
+  const cusdc = reuseC
+    ? await viem.getContractAt('cUSDC', reuseC)
+    : await viem.deployContract('cUSDC', [usdc.address]);
+  console.log(`cUSDC   : ${cusdc.address}${reuseC ? ' (reused)' : ''}`);
+
+  if (reuseC) {
+    // A reused wrapper must wrap the token we are about to settle in, or the
+    // round would escrow one asset and pay the pool in another.
+    const underlying = await cusdc.read.underlying();
+    if ((underlying as string).toLowerCase() !== usdc.address.toLowerCase()) {
+      throw new Error(`cUSDC at ${reuseC} wraps ${underlying}, not ${usdc.address}`);
+    }
+    console.log('          underlying verified');
+  }
 
   // anchor the deadline to chain time, not the local clock — `contribute` and
   // `finalizeTally` both compare against block.timestamp.
