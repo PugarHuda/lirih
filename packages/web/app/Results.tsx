@@ -89,24 +89,38 @@ export default function Results({ projectId }: { projectId: number }) {
     }
     setError('');
     try {
-      const ph = await pub.readContract({ address: ADDRESSES.round, abi: roundAbi, functionName: 'phase' });
+      // Batch through Multicall3 rather than issuing N+5 sequential eth_calls.
+      // Multicall3 is already deployed on Sepolia and viem knows its address, so
+      // this needs no contract change and works against rounds already live. The
+      // sequential version was slow and is what got this project rate-limited by a
+      // public RPC provider mid-run.
+      const base = { address: ADDRESSES.round, abi: roundAbi } as const;
+      const [ph, dl, poolAmt, s, n] = await pub.multicall({
+        contracts: [
+          { ...base, functionName: 'phase' },
+          { ...base, functionName: 'contributionDeadline' },
+          { ...base, functionName: 'matchingPool' },
+          { ...base, functionName: 'settledSplit' },
+          { ...base, functionName: 'projectCount' },
+        ],
+        allowFailure: false,
+      });
       setPhase(Number(ph));
-      setDeadline(Number(await pub.readContract({ address: ADDRESSES.round, abi: roundAbi, functionName: 'contributionDeadline' })));
-      setPool((await pub.readContract({ address: ADDRESSES.round, abi: roundAbi, functionName: 'matchingPool' })) as bigint);
-      const s = await pub.readContract({ address: ADDRESSES.round, abi: roundAbi, functionName: 'settledSplit' });
+      setDeadline(Number(dl));
+      setPool(poolAmt as bigint);
       setSplit(s as `0x${string}`);
-      const n = await pub.readContract({ address: ADDRESSES.round, abi: roundAbi, functionName: 'projectCount' });
-      const out: Row[] = [];
-      for (let i = 0n; i < (n as bigint); i++) {
-        const p = (await pub.readContract({
-          address: ADDRESSES.round, abi: roundAbi, functionName: 'projects', args: [i],
-        })) as unknown as any[];
-        out.push({
-          id: Number(i), payout: p[0], alloc: p[5] as bigint,
-          revealed: p[6] as boolean, name: (p[8] as string) ?? '',
-        });
-      }
-      setRows(out);
+
+      const count = Number(n);
+      const projects = count === 0 ? [] : await pub.multicall({
+        contracts: Array.from({ length: count }, (_, i) => ({
+          ...base, functionName: 'projects' as const, args: [BigInt(i)],
+        })),
+        allowFailure: false,
+      });
+      setRows((projects as unknown as any[][]).map((p, i) => ({
+        id: i, payout: p[0], alloc: p[5] as bigint,
+        revealed: p[6] as boolean, name: (p[8] as string) ?? '',
+      })));
     } catch (err) {
       // Never swallow this. The common cause is a configured round deployed from
       // OLDER contracts than this frontend: `projects()` gained a `name` member,
