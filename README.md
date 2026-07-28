@@ -107,6 +107,26 @@ private. Operator flow gas: `finalizeTally` 287k · `computeAllocations` 262k ·
 | 0xSplits V2 PushSplit (created by settle) | `0xA59b26EEe6234c99aE9ce3e1242ce1d2D3175Ff6` |
 | PushSplitFactory V2.2 (unmodified, upstream) | `0x8E8eB0cC6AE34A38B67D5Cf91ACa38f60bc3Ecf4` |
 
+## What is deployed vs what is in this branch
+
+The live round above runs the contract as of commit **`2c7a5f3`**, and the
+Sourcify verification matches that deployed bytecode exactly. `main` has moved on
+since: the current source is 18,990 runtime bytes against 15,321 on-chain, so
+they are deliberately **not** the same code.
+
+Added after the round was deployed, and therefore present in this repo but not at
+that address:
+
+- `fundPool` / `sweepPool` — crowdfunded matching pool, stranded-pool recovery
+- `finalizeTallyPaged` / `computeAllocationsPaged` — resumable passes
+- `transferOperator` / `acceptOperator` — two-step operator handover
+- removal of the `UnknownProject` guard, after proving it unreachable
+
+None of this changes what the settled round did or how it did it; the QF maths,
+the encryption path and the settlement are identical. Redeploying to close the gap
+costs ~0.016 ETH and the deployer holds 0.0077, so the honest thing is to say
+which revision is live rather than imply the address runs `main`.
+
 ## Verified against live Nox on Ethereum Sepolia
 
 No mock data on the confidential path — these are measured numbers from the live
