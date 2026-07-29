@@ -74,6 +74,13 @@ export const roundAbi = [
   { type: 'function', name: 'myContribution', stateMutability: 'view',
     inputs: [{ type: 'address' }, { type: 'uint256' }],
     outputs: [{ type: 'bytes32' }] },
+  // Plaintext on purpose, on-chain: participation is already public via the
+  // Contributed event, and only the AMOUNT is secret. Reading it costs no
+  // gateway round trip and no viewer role, which is what makes it usable in a
+  // status strip.
+  { type: 'function', name: 'hasGiven', stateMutability: 'view',
+    inputs: [{ type: 'address' }, { type: 'uint256' }],
+    outputs: [{ type: 'bool' }] },
   { type: 'function', name: 'revealAllocation', stateMutability: 'nonpayable',
     inputs: [
       { name: 'projectId', type: 'uint256' },

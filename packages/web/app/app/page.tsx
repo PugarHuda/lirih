@@ -3,7 +3,7 @@
 // permissionless panel that lets anyone drive a round to settlement.
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { parseEther } from 'viem';
+import { parseEther, formatEther } from 'viem';
 import { sepolia } from 'viem/chains';
 import { encryptDonation } from '../../lib/nox';
 import {
@@ -19,6 +19,21 @@ import Results from '../Results';
 /// silently; see donate().
 type ViewerMode = 'snap' | 'eoa';
 
+/// A deadline is only useful as a distance. "8/5/2026, 8:34:00 AM" makes you do
+/// arithmetic before you know whether you can still donate; "4d 6h" does not.
+function Countdown({ to }: { to: number }) {
+  const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
+  useEffect(() => {
+    const t = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 30_000);
+    return () => clearInterval(t);
+  }, []);
+  const left = to - now;
+  if (left <= 0) return <>closed</>;
+  const d = Math.floor(left / 86400), h = Math.floor((left % 86400) / 3600);
+  const m = Math.floor((left % 3600) / 60);
+  return <>{d > 0 ? `${d}d ${h}h` : h > 0 ? `${h}h ${m}m` : `${m}m`}</>;
+}
+
 export default function App() {
   const [account, setAccount] = useState<`0x${string}`>();
   const [amount, setAmount] = useState('100');
@@ -29,6 +44,7 @@ export default function App() {
   const [error, setError] = useState('');
   const [hashes, setHashes] = useState<{ label: string; hash: `0x${string}` }[]>([]);
   const [round, setRound] = useState<{ phase: number; deadline: number }>();
+  const [pool, setPool] = useState<bigint>();
 
   // Read the round's phase before offering to spend anyone's gas on it. A
   // settled round is the NORMAL state of a demo deployment, so this is what most
@@ -36,10 +52,34 @@ export default function App() {
   useEffect(() => {
     readRoundStatus().then(setRound).catch((e) =>
       setError(`Cannot read round ${ADDRESSES.round}: ${(e as Error).message.split('\n')[0]}`));
+    // The strip degrades to a placeholder if this fails rather than taking the
+    // page down; Results is where read failures are reported.
+    pub.readContract({ address: ADDRESSES.round, abi: roundAbi, functionName: 'matchingPool' })
+      .then((m) => setPool(m as bigint)).catch(() => {});
   }, []);
 
   const open = round ? acceptsContributions(round.phase, round.deadline) : undefined;
   const overCap = Number(amount) > SQRT_WEIGHT_CAP;
+
+  // Whether this visitor has given to the selected project. Deliberately NOT the
+  // amount: that is encrypted, and reading it needs the viewer role and a gateway
+  // round trip. Participation is already public — the Contributed event names the
+  // donor — so showing it here reveals nothing the chain does not.
+  const [gave, setGave] = useState<boolean>();
+  useEffect(() => {
+    setGave(undefined);
+    if (!account) return;
+    pub.readContract({
+      address: ADDRESSES.round, abi: roundAbi, functionName: 'hasGiven',
+      args: [account, BigInt(projectId)],
+    }).then((g) => setGave(g as boolean)).catch(() => {});
+  }, [account, projectId]);
+
+  const mineLabel = !account
+    ? <small>connect to see</small>
+    : gave === undefined ? '…'
+    : gave ? <><span className="accent">sealed</span> <small>decrypt below</small></>
+    : <small>none yet</small>;
 
   /// One place that disables input mid-flight, and one place that SHOWS failures.
   /// Without it a throw (wrong network, rejection, revert) disappeared into an
@@ -143,6 +183,29 @@ export default function App() {
         Four transactions get you a confidential balance and authorise the round; the
         fifth is the donation itself, and it is the only one nobody can read.
       </p>
+
+      {/* State before actions. Every value is read from the round, so what the
+          page offers below and what it reports here cannot disagree. */}
+      <dl className="stats">
+        <div>
+          <dt>Phase</dt>
+          <dd className={open ? 'accent' : undefined}>
+            {round ? PHASES[round.phase] ?? round.phase : '…'}
+          </dd>
+        </div>
+        <div>
+          <dt>{open ? 'Closes' : 'Closed'}</dt>
+          <dd>{round ? <Countdown to={round.deadline} /> : '…'}</dd>
+        </div>
+        <div>
+          <dt>Matching pool</dt>
+          <dd>{pool === undefined ? '…' : Number(formatEther(pool)).toLocaleString()} <small>mUSDC</small></dd>
+        </div>
+        <div>
+          <dt>Your donation</dt>
+          <dd>{mineLabel}</dd>
+        </div>
+      </dl>
 
       {open === false && round && (
         <div className="note note-info" style={{ marginBottom: 'var(--s4)' }}>
