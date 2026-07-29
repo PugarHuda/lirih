@@ -47,6 +47,21 @@ const DONOR_INDEXES = LEAN ? [4] : [4, 5, 6];
 // surfaces as a bare "execution reverted" with no revert data.
 const GAS_TARGET = parseEther(LEAN ? '0.0095' : '0.025');
 
+// A donor giving to the SAME project twice pays for a second encrypted sqrt:
+// ~4.73M gas against ~2.6M, because the contract has to swap that donor's old
+// root out for their new one. At the 3 gwei ceiling that reserves ~0.0142 ETH,
+// so the flat target above is not enough and the transaction is rejected before
+// it is mined -- surfacing as "gas required exceeds allowance", which reads like
+// a contract problem and is a funding one.
+const REPEAT_TARGET = parseEther('0.018');
+
+/// What this donor slot must hold, given what the plan asks of it.
+const targetFor = (slot: number) => {
+  const projects = PLAN.filter(([, s]) => s === slot).map(([p]) => p);
+  const givesTwice = projects.length !== new Set(projects).size;
+  return givesTwice ? REPEAT_TARGET : GAS_TARGET;
+};
+
 // [projectId, donorSlot, wholeTokens]; slot -1 means the funder itself.
 const LEAN_PLAN: [number, number, string][] = [
   [0, -1, '100'], [0, 0, '100'],  // crowd of two -> earns the matching
@@ -59,7 +74,27 @@ const FULL_PLAN: [number, number, string][] = [
   [2, 1, '100'], [2, 2, '100'],
 ];
 
-const PLAN = LEAN ? LEAN_PLAN : FULL_PLAN;
+// PLAN=cases seeds a round that demonstrates the two properties this project is
+// actually about, rather than just producing a plausible-looking book.
+//
+// The crowd/whale contrast is the QF argument: project 1 raises three times more
+// money than project 0 and earns ZERO matching, because it all came from one
+// address.
+//
+// The repeat donation is the one that has never been shown on-chain. Quadratic
+// funding weights a project by (Σ√cᵢ)² where i ranges over DONORS, not
+// transactions -- take the root per transaction and one donor can split a gift
+// across N of them and multiply their own weight by √N, with no extra addresses
+// at all. Donor 0 gives 100 twice here, so their weight is √200 and not 2·√100,
+// and the second contribution costs a second sqrt (~1.8x the gas) to prove it.
+const CASES_PLAN: [number, number, string][] = [
+  [0, -1, '100'], // crowd member one
+  [0,  0, '100'], // crowd member two
+  [0,  0, '100'], // ...and again, from the SAME donor: splitting must buy nothing
+  [1, -1, '900'], // the whale: most money raised, zero matching earned
+];
+
+const PLAN = process.env.PLAN === 'cases' ? CASES_PLAN : LEAN ? LEAN_PLAN : FULL_PLAN;
 
 const env = (k: string) => {
   const v = process.env[k];
@@ -110,19 +145,20 @@ async function main() {
 
   // top up only the shortfall — re-runs shouldn't re-drain the funder
   for (const [i, d] of donors.entries()) {
+    const target = targetFor(i); // plan slots index this array, not the HD path
     const bal = await pub.getBalance({ address: d.address });
-    if (bal >= GAS_TARGET) {
+    if (bal >= target) {
       console.log(`donor ${i} funded (${formatEther(bal)} ETH), skipping topup`);
       continue;
     }
-    const hash = await funderWallet.sendTransaction({ to: d.address, value: GAS_TARGET - bal });
+    const hash = await funderWallet.sendTransaction({ to: d.address, value: target - bal });
     await pub.waitForTransactionReceipt({ hash });
     // Confirm the ETH is actually THERE. A receipt only proves the transfer was
     // mined, not that the balance survived — funding a publicly-known key gets
     // swept by bots between this transaction and the next one, which reads as a
     // baffling "insufficient funds" much later instead of an error here.
     const after = await pub.getBalance({ address: d.address });
-    if (after < GAS_TARGET / 2n) {
+    if (after < target / 2n) {
       throw new Error(
         `donor ${i} (${d.address}) shows ${formatEther(after)} ETH right after being sent ` +
         `${formatEther(GAS_TOPUP)}. The funds were swept — is this a publicly-known key?`,

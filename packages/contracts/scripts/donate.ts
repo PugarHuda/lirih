@@ -104,8 +104,17 @@ export async function donate(o: DonateOpts) {
   return mine as `0x${string}`;
 }
 
-// CLI entry — only when run directly, so seed-round.ts can import donate().
-if (import.meta.url === `file:///${process.argv[1]?.replace(/\\/g, '/')}`) {
+// CLI entry — only when THIS script is the one being executed, so seed-round.ts
+// can still import donate() without triggering a run.
+//
+// The usual idiom, `import.meta.url === process.argv[1]`, is WRONG under
+// `hardhat run`: hardhat IMPORTS the script, so argv[1] is hardhat's own entry
+// point and the comparison never matched. The invocation documented at the top of
+// this file therefore did nothing at all — no output, no error, exit 0, which is
+// the worst way for a script to fail.
+const invokedDirectly = process.argv.some((a) =>
+  a.replace(/\\/g, '/').endsWith('scripts/donate.ts'));
+if (invokedDirectly) {
   donate({
     key: (process.env.DONOR_PRIVATE_KEY ?? env('DEPLOYER_PRIVATE_KEY')) as `0x${string}`,
     round: env('ROUND_ADDRESS') as `0x${string}`,
