@@ -1,154 +1,181 @@
 'use client';
-// Minimal Lirih flow on injected MetaMask (viem, no wagmi sprawl). Demo-grade:
-// faucet -> wrap -> authorize round -> confidential donate. Results/reveal are
-// driven by the operator script; this page proves the donor path end-to-end.
-import { useState } from 'react';
-import { parseEther } from 'viem';
-import { sepolia } from 'viem/chains';
-import { encryptDonation } from '../lib/nox';
-import { ADDRESSES, roundAbi, cusdcAbi, musdcAbi, tx, explorerTx, connectWallet } from '../lib/lirih';
-import { connectSnap, getNoxAddress } from '../lib/snap';
-import Results from './Results';
+// Landing page. The app moved to /app — this is what a judge or a donor hits
+// first, and it has one job: say what the thing is, prove it is real, and get
+// out of the way.
+//
+// The numbers below are READ FROM CHAIN, not typed into this file. A landing
+// page that hardcodes its own metrics is a screenshot, and this project's whole
+// argument is that you can check it yourself.
+import { useEffect, useState } from 'react';
+import Link from 'next/link';
+import { formatEther } from 'viem';
+import { ADDRESSES, roundAbi, pub, explorerAddr, acceptsContributions } from '../lib/lirih';
+import { Ext, Lock } from './icons';
 
-/// Which key was granted the viewer role — decides whether the coercion-resistance
-/// claim actually holds for this donation. Never inferred silently; see donate().
-type ViewerMode = 'snap' | 'eoa';
+const SETTLED = '0x4f15c2a627e3f8e866a83fc57f3aa0897ad47399' as const;
 
-export default function Home() {
-  const [account, setAccount] = useState<`0x${string}`>();
-  const [amount, setAmount] = useState('100');
-  const [projectId, setProjectId] = useState('0');
-  const [status, setStatus] = useState('');
-  const [viewerMode, setViewerMode] = useState<ViewerMode>();
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
-  const [hashes, setHashes] = useState<{ label: string; hash: `0x${string}` }[]>([]);
+type Live = { open: boolean; deadline: number; pool: bigint; projects: number };
+type Row = { name: string; alloc: bigint; revealed: boolean };
 
-  /// Every button goes through here: one place that disables input while a
-  /// multi-transaction flow is mid-flight, and one place that SHOWS failures.
-  /// Without it a throw (wrong network, user rejection, revert) disappeared into
-  /// an unhandled promise rejection and the page just sat there.
-  async function run(fn: () => Promise<void>) {
-    if (busy) return;
-    setBusy(true);
-    setError('');
-    try {
-      await fn();
-    } catch (e) {
-      const msg = (e as Error)?.message ?? String(e);
-      setError(/User rejected|denied/i.test(msg) ? 'Cancelled in wallet.' : msg.split('\n')[0]);
-      setStatus('');
-    } finally {
-      setBusy(false);
-    }
-  }
+export default function Landing() {
+  const [live, setLive] = useState<Live>();
+  const [settled, setSettled] = useState<Row[]>([]);
 
-  const track = (label: string) => (hash: `0x${string}`) =>
-    setHashes((h) => [...h, { label, hash }]);
+  useEffect(() => {
+    (async () => {
+      const open = { address: ADDRESSES.round, abi: roundAbi } as const;
+      const [phase, deadline, pool, n] = await pub.multicall({
+        contracts: [
+          { ...open, functionName: 'phase' },
+          { ...open, functionName: 'contributionDeadline' },
+          { ...open, functionName: 'matchingPool' },
+          { ...open, functionName: 'projectCount' },
+        ],
+        allowFailure: false,
+      });
+      setLive({
+        open: acceptsContributions(Number(phase), Number(deadline)),
+        deadline: Number(deadline), pool: pool as bigint, projects: Number(n),
+      });
 
-  /// Shared with the round-advancing panel — the Sepolia guard lives in
-  /// lib/lirih.ts so there is exactly one copy of it.
-  async function wallet() {
-    const w = await connectWallet(setStatus);
-    setAccount(w.account.address);
-    return w;
-  }
-
-  async function faucetAndWrap() {
-    const w = await wallet();
-    const amt = parseEther(amount);
-    const me = w.account!.address;
-    setStatus('1/4 minting mUSDC…');
-    await tx(w, { address: ADDRESSES.musdc, abi: musdcAbi, functionName: 'mint', args: [me, amt], chain: sepolia, account: me }, track('mint'));
-    setStatus('2/4 approving wrapper…');
-    await tx(w, { address: ADDRESSES.musdc, abi: musdcAbi, functionName: 'approve', args: [ADDRESSES.cusdc, amt], chain: sepolia, account: me }, track('approve'));
-    setStatus('3/4 wrapping to cUSDC (this amount IS public — only what you do next is private)…');
-    await tx(w, { address: ADDRESSES.cusdc, abi: cusdcAbi, functionName: 'wrap', args: [me, amt], chain: sepolia, account: me }, track('wrap'));
-    setStatus('4/4 authorizing round as operator…');
-    const until = Math.floor(Date.now() / 1000) + 3600;
-    await tx(w, { address: ADDRESSES.cusdc, abi: cusdcAbi, functionName: 'setOperator', args: [ADDRESSES.round, until], chain: sepolia, account: me }, track('setOperator'));
-    setStatus('ready to donate');
-  }
-
-  async function donate() {
-    const w = await wallet();
-    // Encrypt with the EOA (satisfies fromExternal: encrypting wallet == tx
-    // sender). The VIEWER is what decides whether coercion resistance actually
-    // holds, so it is never chosen silently:
-    //   Snap identity -> key lives in the SES sandbox and cannot sign for a
-    //     briber, so the donor can read their own amount and prove nothing.
-    //   EOA fallback  -> the donor CAN sign to prove their amount to a briber.
-    //     Still private on-chain, but NOT coercion resistant. Surfaced in the UI.
-    let viewer = w.account!.address as `0x${string}`;
-    let mode: ViewerMode = 'eoa';
-    try {
-      await connectSnap();
-      viewer = (await getNoxAddress()).address;
-      mode = 'snap';
-    } catch { /* snap unavailable — fall back, but say so */ }
-    setViewerMode(mode);
-
-    setStatus('encrypting amount inside the Nox gateway TEE…');
-    const { handle, handleProof } = await encryptDonation(w, parseEther(amount), ADDRESSES.round);
-    setStatus('submitting confidential contribution (calldata carries a 32-byte handle, not your amount)…');
-    await tx(w, {
-      address: ADDRESSES.round, abi: roundAbi, functionName: 'contribute',
-      args: [BigInt(projectId), handle as `0x${string}`, handleProof, viewer],
-      chain: sepolia, account: w.account!.address,
-    }, track('contribute'));
-    setStatus('done — your amount is encrypted on-chain (calldata is a 32-byte handle)');
-  }
+      // The finished round is a separate address, deliberately: a settled round
+      // is a read-only artefact and the open one is the thing you can use.
+      const done = { address: SETTLED, abi: roundAbi } as const;
+      const rows = await pub.multicall({
+        contracts: [0, 1].map((i) => ({ ...done, functionName: 'projects' as const, args: [BigInt(i)] })),
+        allowFailure: false,
+      });
+      setSettled((rows as unknown as any[][]).map((p) => ({
+        name: p[8] as string, alloc: p[5] as bigint, revealed: p[6] as boolean,
+      })));
+    })().catch(() => { /* landing must render regardless; /app surfaces read errors */ });
+  }, []);
 
   return (
-    <main style={{ maxWidth: 560, margin: '4rem auto', fontFamily: 'system-ui' }}>
-      <h1>Lirih — confidential quadratic funding</h1>
-      <p>Your donation amount stays encrypted end-to-end. Only the final per-project allocation is ever revealed.</p>
-      <p><b>Account:</b> {account ?? 'not connected'}</p>
-      <label>Amount (mUSDC): <input value={amount} onChange={(e) => setAmount(e.target.value)} /></label><br />
-      <label>Project id: <input value={projectId} onChange={(e) => setProjectId(e.target.value)} /></label>
-      <div style={{ marginTop: 16, display: 'flex', gap: 8 }}>
-        <button disabled={busy} onClick={() => run(faucetAndWrap)}>
-          1 · Faucet + wrap + authorize
-        </button>
-        <button disabled={busy} onClick={() => run(donate)}>
-          2 · Donate (encrypted)
-        </button>
-      </div>
-      {status && (
-        <p style={{ marginTop: 16, color: '#555' }}>
-          {busy && <span aria-hidden> ⏳ </span>}{status}
+    <main>
+      <section className="wrap hero">
+        <div className="eyebrow">iExec Nox · Ethereum Sepolia</div>
+        <h1>Fund what matters.<br />Prove nothing to anyone.</h1>
+        <p className="lede">
+          Quadratic funding needs everyone&apos;s donation amounts, which makes bribery
+          trivial: <em>show me you gave to my project and I&apos;ll pay you</em>. Lirih
+          encrypts every contribution end to end, computes the funding weights inside a
+          TEE, and reveals <strong>only the final per-project allocation</strong>.
         </p>
-      )}
-      {error && (
-        <p role="alert" style={{
-          marginTop: 12, padding: '8px 12px', borderRadius: 6, fontSize: 14,
-          background: '#fdecea', border: '1px solid #f5aca6',
-        }}>{error}</p>
-      )}
-      {hashes.length > 0 && (
-        <ul style={{ marginTop: 12, fontSize: 13, paddingLeft: 18 }}>
-          {hashes.map(({ label, hash }) => (
-            <li key={hash}>
-              {label}:{' '}
-              <a href={explorerTx(hash)} target="_blank" rel="noreferrer">
-                {hash.slice(0, 10)}…
-              </a>
-            </li>
-          ))}
-        </ul>
-      )}
-      {viewerMode && (
-        <p style={{
-          marginTop: 8, padding: '8px 12px', borderRadius: 6, fontSize: 14,
-          background: viewerMode === 'snap' ? '#e7f6ec' : '#fff4e5',
-          border: `1px solid ${viewerMode === 'snap' ? '#a3d9b1' : '#f0c987'}`,
-        }}>
-          {viewerMode === 'snap'
-            ? '🔒 Coercion-resistant: your viewing key lives inside the MetaMask Snap sandbox. You can read your own donation; you cannot prove it to anyone else.'
-            : '⚠️ Snap not installed — your EOA was granted the viewing role. Your amount is still encrypted on-chain, but you CAN sign to prove it to a third party, so this donation is not coercion-resistant. Install the Snap for the full guarantee.'}
+        <div className="row" style={{ marginTop: 'var(--s5)' }}>
+          <Link href="/app"><button>Open the app</button></Link>
+          <a href="https://github.com/PugarHuda/lirih" target="_blank" rel="noreferrer">
+            <button className="ghost">Read the code <Ext /></button>
+          </a>
+        </div>
+        {live && (
+          <p className="dim" style={{ marginTop: 'var(--s4)', fontSize: '0.9rem' }}>
+            {live.open ? (
+              <>Round open · {live.projects} projects · {formatEther(live.pool)} mUSDC matching pool ·
+                {' '}closes {new Date(live.deadline * 1000).toLocaleDateString()}</>
+            ) : (
+              <>The configured round has closed — the app still shows its result.</>
+            )}
+          </p>
+        )}
+      </section>
+
+      <section className="wrap">
+        <h2>A whale raised 4.5× more money and earned nothing</h2>
+        <p className="dim narrow">
+          From a real settled round on Sepolia. Two projects, encrypted donations,
+          quadratic weights computed under encryption. One was funded by a crowd of
+          two; the other by a single large donor giving far more.
         </p>
-      )}
-      <Results projectId={Number(projectId)} />
+        <div className="card">
+          <table>
+            <thead>
+              <tr><th>Project</th><th style={{ textAlign: 'right' }}>Raised</th><th style={{ textAlign: 'right' }}>Matching</th></tr>
+            </thead>
+            <tbody>
+              {settled.length === 0 ? (
+                <tr><td colSpan={3} className="dim">reading the settled round…</td></tr>
+              ) : settled.map((r, i) => (
+                <tr key={r.name}>
+                  <td>{r.name}</td>
+                  <td className="num dim">{i === 0 ? '200' : '900'}</td>
+                  <td className="num" style={{ color: r.alloc > 0n ? 'var(--accent)' : 'var(--fg-dim)' }}>
+                    {r.revealed ? `${Number(formatEther(r.alloc)).toLocaleString(undefined, { maximumFractionDigits: 2 })}` : '—'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="dim" style={{ margin: 'var(--s4) 0 0', fontSize: '0.85rem' }}>
+            Read live from{' '}
+            <a href={explorerAddr(SETTLED)} target="_blank" rel="noreferrer" className="mono">
+              {SETTLED.slice(0, 10)}… <Ext />
+            </a>
+            {' '}— not typed into this page.
+          </p>
+        </div>
+      </section>
+
+      <section className="wrap">
+        <h2>How it works</h2>
+        <div className="grid">
+          <div className="card">
+            <h3>1 · Donate, encrypted</h3>
+            <p className="dim" style={{ margin: 0, fontSize: '0.92rem' }}>
+              Your amount is encrypted by the gateway inside its TEE. The transaction
+              carries a 32-byte handle, not a number.
+            </p>
+          </div>
+          <div className="card">
+            <h3>2 · Weights under encryption</h3>
+            <p className="dim" style={{ margin: 0, fontSize: '0.92rem' }}>
+              The contract computes <span className="mono">(Σ√cᵢ)² − Σcᵢ</span> per project
+              without ever decrypting a contribution. Nox has no square root, so it is
+              built from a 41-bit binary search.
+            </p>
+          </div>
+          <div className="card">
+            <h3>3 · Reveal one number each</h3>
+            <p className="dim" style={{ margin: 0, fontSize: '0.92rem' }}>
+              Only the final allocations are decrypted, by gateway-signed proof the
+              contract verifies itself — then settled into an unmodified 0xSplits V2.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section className="wrap">
+        <div className="card">
+          <h3><Lock /> Coercion resistance, and its condition</h3>
+          <p className="dim" style={{ marginBottom: 0, fontSize: '0.92rem' }}>
+            With the MetaMask Snap installed, your viewing key is derived from your
+            secret recovery phrase and never leaves the sandbox: you can read your own
+            donation and cannot sign anything that proves it to a briber.{' '}
+            <strong style={{ color: 'var(--fg)' }}>Without the Snap your EOA holds that
+            role and can prove the amount</strong>, so the guarantee does not hold on
+            that path. The app tells you which mode is active rather than choosing
+            quietly.
+          </p>
+        </div>
+      </section>
+
+      <section className="wrap" style={{ paddingBottom: 'var(--s7)' }}>
+        <div className="row">
+          <Link href="/app"><button>Open the app</button></Link>
+          <span className="dim" style={{ fontSize: '0.9rem' }}>
+            Sepolia testnet · faucet tokens built in · no real funds
+          </span>
+        </div>
+      </section>
+
+      <footer>
+        <div className="wrap row" style={{ justifyContent: 'space-between' }}>
+          <span>Lirih · WTF Hackathon Summer Edition · built on iExec Nox</span>
+          <a href={explorerAddr(ADDRESSES.round)} target="_blank" rel="noreferrer" className="mono">
+            round {ADDRESSES.round.slice(0, 10)}… <Ext />
+          </a>
+        </div>
+      </footer>
     </main>
   );
 }

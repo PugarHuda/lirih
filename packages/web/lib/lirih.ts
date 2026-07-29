@@ -82,6 +82,10 @@ export const roundAbi = [
     ], outputs: [] },
   { type: 'function', name: 'phase', stateMutability: 'view', inputs: [],
     outputs: [{ type: 'uint8' }] },
+  // Permissionless while the round is open: the matching pool is public by design,
+  // so there is nothing to hide and no reason to gate topping it up.
+  { type: 'function', name: 'fundPool', stateMutability: 'nonpayable',
+    inputs: [{ name: 'amount', type: 'uint256' }], outputs: [] },
   // The post-deadline pipeline is permissionless by design — no operator gate —
   // so the UI can expose it to anyone. See LirihRound.finalizeTally.
   { type: 'function', name: 'finalizeTally', stateMutability: 'nonpayable', inputs: [], outputs: [] },
@@ -131,3 +135,36 @@ export const musdcAbi = [
 ] as const;
 
 export const PHASES = ['Contribution', 'Tallied', 'Allocated', 'Settled'] as const;
+
+/// The one definition of "this round still takes donations". Both the donor
+/// buttons and the advance panel branch on it, and a page where those two
+/// disagree offers you a donate button and a finalize button at the same time.
+export const acceptsContributions = (phase: number, deadline: number) =>
+  phase === 0 && Date.now() / 1000 <= deadline;
+
+/// Phase + deadline in one round trip.
+///
+/// The donor flow needs this BEFORE it starts. `contribute` is the fourth
+/// transaction of mint -> approve -> wrap -> setOperator -> contribute, and it
+/// is the only one that reverts on a closed round — so without this read a
+/// visitor spends real gas on four transactions that were never going to lead
+/// anywhere, and then sees a raw `WrongPhase`. Rounds spend most of their life
+/// closed, so this is the common case, not the edge case.
+export async function readRoundStatus() {
+  const base = { address: ADDRESSES.round, abi: roundAbi } as const;
+  const [phase, deadline] = await pub.multicall({
+    contracts: [
+      { ...base, functionName: 'phase' },
+      { ...base, functionName: 'contributionDeadline' },
+    ],
+    allowFailure: false,
+  });
+  return { phase: Number(phase), deadline: Number(deadline) };
+}
+
+/// Contributions above this stop earning extra QF weight: `LirihRound` clamps
+/// the sqrt input to 1e24 so the 41-bit encrypted search stays exact, which
+/// doubles as an anti-whale cap. The excess still escrows and still reaches the
+/// project — it just buys no more matching. A donor who is not told this reads
+/// a silently capped weight as a bug.
+export const SQRT_WEIGHT_CAP = 1_000_000;

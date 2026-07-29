@@ -4,8 +4,9 @@
 import { useEffect, useState } from 'react';
 import { formatEther, createWalletClient, custom } from 'viem';
 import { sepolia } from 'viem/chains';
-import { ADDRESSES, roundAbi, PHASES, pub, tx, connectWallet, explorerAddr } from '../lib/lirih';
+import { ADDRESSES, roundAbi, PHASES, pub, tx, connectWallet, explorerAddr, acceptsContributions } from '../lib/lirih';
 import { connectSnap, decryptMine } from '../lib/snap';
+import { Alert, Check, Ext, Spinner } from './icons';
 import { decryptMine as decryptMineWithEoa, publicDecryptAllocation } from '../lib/nox';
 
 const ZERO_HANDLE = `0x${'00'.repeat(32)}`;
@@ -173,51 +174,49 @@ export default function Results({ projectId }: { projectId: number }) {
   }
 
   return (
-    <section style={{ maxWidth: 560, margin: '2rem auto', fontFamily: 'system-ui' }}>
-      <h2>Results {phase !== undefined && <small>· phase: {PHASES[phase]}</small>}</h2>
+    <section style={{ marginTop: 'var(--s7)' }}>
+      <h2>Results {phase !== undefined && <span className="pill">{PHASES[phase]}</span>}</h2>
       {error && (
-        <p style={{
-          padding: '8px 12px', borderRadius: 6, fontSize: 14,
-          background: '#fdecea', border: '1px solid #f5aca6',
-        }}>{error}</p>
+        <div role="alert" className="note note-err"><Alert /> {error}</div>
       )}
-      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-        <thead><tr><th align="left">Project</th><th align="right">Matching (revealed)</th></tr></thead>
+      <div className="card">
+      <table>
+        <thead><tr><th>Project</th><th style={{ textAlign: 'right' }}>Matching (revealed)</th></tr></thead>
         <tbody>
           {rows.map((r) => (
             <tr key={r.id}>
               <td>
                 {r.name || `project ${r.id}`}
-                <span style={{ color: '#888', fontSize: 12 }}> · {r.payout.slice(0, 8)}…</span>
+                <span className="dim mono"> · {r.payout.slice(0, 8)}…</span>
               </td>
-              <td align="right">{r.revealed ? `${formatEther(r.alloc)} mUSDC` : '— sealed —'}</td>
+              <td className="num" style={{ color: r.revealed && r.alloc > 0n ? 'var(--accent)' : 'var(--fg-dim)' }}>
+                {r.revealed ? `${formatEther(r.alloc)} mUSDC` : 'sealed'}
+              </td>
             </tr>
           ))}
         </tbody>
       </table>
+      </div>
       {phase !== undefined && phase < 3 && (
-        <section style={{
-          marginTop: 20, padding: '12px 14px', borderRadius: 8,
-          background: '#f4f7fb', border: '1px solid #cdd9e8',
-        }}>
-          <b style={{ fontSize: 14 }}>Advance the round — anyone can do this</b>
-          <p style={{ fontSize: 13, color: '#456', margin: '6px 0 10px' }}>
+        <section className="card">
+          <h3>Advance the round — anyone can do this</h3>
+          <p className="dim" style={{ fontSize: '0.9rem' }}>
             After the deadline every remaining step is fully determined, so none of
             them is gated on an operator. If the organiser disappears, any donor can
             push the round through and release the funds. You just pay the gas.
           </p>
-          <button disabled={advancing || (phase === 0 && !!deadline && Date.now() / 1000 <= deadline)} onClick={advance}>
-            {advancing ? '⏳ working…'
+          <button disabled={advancing || acceptsContributions(phase, deadline ?? 0)} onClick={advance}>
+            {advancing ? 'working…'
               : phase === 0 ? '1 · Finalize tally'
               : phase === 1 ? '2 · Compute allocations'
               : '3 · Reveal & settle'}
           </button>
-          {phase === 0 && !!deadline && Date.now() / 1000 <= deadline && (
-            <span style={{ marginLeft: 10, fontSize: 13, color: '#666' }}>
+          {deadline !== undefined && acceptsContributions(phase, deadline) && (
+            <span className="dim" style={{ marginLeft: 'var(--s3)', fontSize: '0.85rem' }}>
               contributions close {new Date(deadline * 1000).toLocaleString()}
             </span>
           )}
-          {advNote && <p style={{ fontSize: 13, color: '#456', marginTop: 8 }}>⏳ {advNote}</p>}
+          {advNote && <p className="dim row" style={{ fontSize: '0.85rem', marginTop: 'var(--s3)' }}><Spinner /> {advNote}</p>}
         </section>
       )}
       {/* Verify the arithmetic yourself. Every number here is read from chain
@@ -230,13 +229,9 @@ export default function Results({ projectId }: { projectId: number }) {
         const dust = pool > sum ? pool - sum : sum - pool;
         const ok = sum <= pool && dust < BigInt(rows.length + 1);
         return (
-          <section style={{
-            marginTop: 16, padding: '12px 14px', borderRadius: 8, fontSize: 14,
-            background: ok ? '#f2f8f4' : '#fdecea',
-            border: `1px solid ${ok ? '#b9dcc6' : '#f5aca6'}`,
-          }}>
-            <b>{ok ? '✓ Allocations check out' : '⚠ Allocations do not add up'}</b>
-            <ul style={{ margin: '6px 0 0', paddingLeft: 18, lineHeight: 1.6 }}>
+          <section className={`note ${ok ? 'note-ok' : 'note-err'}`} style={{ marginTop: 'var(--s4)' }}>
+            <strong className="row">{ok ? <><Check /> Allocations check out</> : <><Alert /> Allocations do not add up</>}</strong>
+            <ul style={{ margin: 'var(--s2) 0 0', paddingLeft: 18, lineHeight: 1.7 }}>
               <li>sum of revealed allocations: {formatEther(sum)}</li>
               <li>matching pool on-chain: {formatEther(pool)}</li>
               <li>
@@ -248,17 +243,22 @@ export default function Results({ projectId }: { projectId: number }) {
         );
       })()}
       {phase === 3 && split && split !== `0x${'00'.repeat(20)}` && (
-        <p style={{ marginTop: 16, fontSize: 14 }}>
-          Settled through 0xSplits V2:{' '}
-          <a href={explorerAddr(split)} target="_blank" rel="noreferrer">{split.slice(0, 10)}…</a>
+        <p style={{ marginTop: 'var(--s4)', fontSize: '0.9rem' }}>
+          Settled through an unmodified 0xSplits V2:{' '}
+          <a href={explorerAddr(split)} target="_blank" rel="noreferrer" className="mono">
+            {split.slice(0, 10)}… <Ext />
+          </a>
         </p>
       )}
-      <button style={{ marginTop: 12 }} onClick={decryptContribution}>Decrypt my contribution (in-wallet)</button>
-      <button style={{ marginTop: 12, marginLeft: 8 }} onClick={refresh}>Refresh</button>
-      {note && <p style={{ marginTop: 10, fontSize: 14, color: '#555' }}>{note}</p>}
+      <div className="row" style={{ marginTop: 'var(--s4)' }}>
+        <button className="ghost" onClick={decryptContribution}>Decrypt my contribution</button>
+        <button className="ghost" onClick={refresh}>Refresh</button>
+      </div>
+      {note && <p className="dim" style={{ marginTop: 'var(--s3)', fontSize: '0.9rem' }}>{note}</p>}
       {mine !== undefined && (
-        <p style={{ marginTop: 6, fontSize: 14 }}>
-          Your contribution to project {projectId}: <b>{formatEther(mine)} mUSDC</b>
+        <p style={{ marginTop: 'var(--s2)', fontSize: '0.95rem' }}>
+          Your contribution to project {projectId}:{' '}
+          <strong className="mono" style={{ color: 'var(--accent)' }}>{formatEther(mine)} mUSDC</strong>
         </p>
       )}
     </section>

@@ -15,14 +15,31 @@ export async function getHandleClient(wallet: WalletClient): Promise<HandleClien
 /// Encrypt a donation amount into a handle + proof bound to the round contract.
 /// The proof binds (wallet, round) — the wallet MUST be the direct tx sender to
 /// `contribute`, so submit from this same wallet (no router/multicall).
+/// Retried with backoff, unlike the decrypt path's fixed interval, because the
+/// failure being waited out is different: the gateway rate-limits above ~100
+/// concurrent encryptions, and a fixed retry from every client in a crowd is the
+/// thundering herd that keeps it saturated. Backing off drains a queue; hammering
+/// extends it. Four attempts is enough for a burst and short enough that a real
+/// outage still surfaces as an error instead of a page that hangs.
 export async function encryptDonation(
   wallet: WalletClient,
   amount: bigint,
   roundAddress: `0x${string}`,
+  onWait?: (attempt: number, total: number) => void,
 ) {
   const client = await getHandleClient(wallet);
-  const { handle, handleProof } = await client.encryptInput(amount, 'uint256', roundAddress);
-  return { handle, handleProof };
+  const ATTEMPTS = 4;
+  for (let i = 1; i <= ATTEMPTS; i++) {
+    try {
+      const { handle, handleProof } = await client.encryptInput(amount, 'uint256', roundAddress);
+      return { handle, handleProof };
+    } catch (err) {
+      if (i === ATTEMPTS) throw err;
+      onWait?.(i, ATTEMPTS);
+      await new Promise((r) => setTimeout(r, 2000 * 2 ** (i - 1)));
+    }
+  }
+  throw new Error('unreachable');
 }
 
 /// Public-decrypt a revealed allocation handle -> {value, decryptionProof}.
