@@ -1,5 +1,10 @@
-// Talk to the Lirih MetaMask Snap. All confidential compute happens inside the
-// Snap's SES sandbox — this page only relays handles/results, never plaintext.
+// Talk to the Lirih MetaMask Snap.
+//
+// The Snap holds the VIEWING key, not the encrypting one. `Nox.fromExternal`
+// requires the proof's owner to be the transaction's direct `msg.sender`, so only
+// the EOA can encrypt a donation it is about to submit — see packages/snap/src.
+// Decryption of your own contribution DOES happen in the sandbox, and that is the
+// half the coercion-resistance claim rests on.
 const SNAP_ID = process.env.NEXT_PUBLIC_SNAP_ID ?? 'local:http://localhost:8080';
 
 const eth = () => (window as any).ethereum;
@@ -18,12 +23,6 @@ function invoke<T>(method: string, params?: unknown): Promise<T> {
 /// Nox identity address the Snap controls (derived from the user's SRP).
 /// Fund this address with cUSDC and grant it ACLs.
 export const getNoxAddress = () => invoke<{ address: `0x${string}` }>('getNoxAddress');
-
-/// Encrypt a donation inside the sandbox -> {handle, handleProof} to submit.
-export const encryptDonation = (amount: bigint, round: `0x${string}`) =>
-  invoke<{ handle: `0x${string}`; handleProof: `0x${string}` }>('encryptDonation', {
-    amount: amount.toString(), round,
-  });
 
 /// Decrypt the donor's OWN contribution — shown in a MetaMask dialog, never here.
 export const decryptMine = (handle: `0x${string}`) =>

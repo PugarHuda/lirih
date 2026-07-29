@@ -55,6 +55,25 @@ few footguns that cost us hours.
   encrypting wallet must be the direct msg.sender") would save people.
 - **The proof also expires (`proofExpirationDuration`).** We hit stale-proof
   reverts in testing before we understood this.
+- **`unwrap` returns a request id that is a FRESH handle, not the amount handle
+  you passed in.** `_burn` mints a new one, and that is what gets
+  `allowPublicDecryption` and what `finalizeUnwrap` expects. A contract reads it
+  from the return value; an off-chain caller cannot, so the only way to get it is
+  the `UnwrapRequested` event. Passing the handle you supplied fails with *"does
+  not exist or is not publicly decryptable"*, which reads like Runner lag and is
+  not. The interface comment says the id "is the amount handle returned by
+  `unwrap`" — the word doing all the work there is *returned*, and it is easy to
+  read as *supplied*. Worth an explicit "this is a new handle; read it from the
+  event off-chain".
+- **We could not get a freshly-minted burn handle to resolve on the local Runner
+  at all**, across ~90s of retries and mined blocks, in a test that unwraps
+  straight after settlement. Every other handle in the same suite resolves fine,
+  including handles the same wrapper produces when the unwrap is initiated by a
+  *contract* rather than an EOA (our sibling project does exactly that and it
+  works). We could not tell from the error whether this is an Ingestor ordering
+  issue, an ACL one, or our own mistake — which is the actual feedback: *"Handles
+  not resolved after 60 attempts"* is the same message for "wait longer", "wrong
+  handle", and "this will never resolve", and only the first is worth retrying.
 
 ## Docs / tooling
 

@@ -13,6 +13,21 @@ import { panel, text, heading, copyable } from '@metamask/snaps-sdk';
 import { createEthersHandleClient } from '@iexec-nox/handle';
 import { Wallet } from 'ethers';
 
+// THIS SNAP DOES NOT ENCRYPT DONATIONS, AND CANNOT.
+//
+// It exposed an `encryptDonation` method until it was checked against the rule
+// that governs it: `Nox.fromExternal` requires the owner of an input proof to be
+// the direct `msg.sender` of the transaction consuming it. A donation encrypted
+// by this snap-derived identity and submitted by the user's EOA fails that check
+// with `InvalidProof`, always. The page never called it — it encrypts with the
+// EOA and uses this snap only for the viewer role — so the method was dead code
+// that merely LOOKED like the right thing to reach for. The sibling project
+// reached for its equivalent and broke its whole Snap path.
+//
+// The viewing key is the half that carries the coercion-resistance property, and
+// it belongs here: SRP-derived, never leaving the sandbox, so the donor can read
+// their own contribution and cannot sign anything that proves it to a briber.
+//
 // Snap-owned signer derived deterministically from the user's SRP. This address
 // is the donor's Nox identity; the round/token ACLs are granted to it.
 async function snapSigner() {
@@ -32,15 +47,6 @@ async function client() {
 
 export const onRpcRequest: OnRpcRequestHandler = async ({ request }) => {
   switch (request.method) {
-    // Encrypt a donation amount in-sandbox -> {handle, handleProof} for the page
-    // to submit to LirihRound.contribute. Plaintext stays in the sandbox.
-    case 'encryptDonation': {
-      const { amount, round } = request.params as { amount: string; round: `0x${string}` };
-      const c = await client();
-      const { handle, handleProof } = await c.encryptInput(BigInt(amount), 'uint256', round);
-      return { handle: String(handle), handleProof: String(handleProof) } as Json;
-    }
-
     // Decrypt the donor's OWN contribution handle and show it inside MetaMask.
     // The donor learns their number but can't prove it to anyone (they'd have to
     // expose their SRP-derived key) -> coercion resistance.
