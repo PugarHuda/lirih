@@ -6,12 +6,14 @@ import { createWalletClient, createPublicClient, http, getContract } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts';
 import { sepolia } from 'viem/chains';
 import { createViemHandleClient } from '@iexec-nox/handle';
+import { waitForDeadline } from './chain-time.ts';
 
 const ABI = [
   { type: 'function', name: 'finalizeTally', stateMutability: 'nonpayable', inputs: [], outputs: [] },
   { type: 'function', name: 'computeAllocations', stateMutability: 'nonpayable', inputs: [], outputs: [] },
   { type: 'function', name: 'settle', stateMutability: 'nonpayable', inputs: [], outputs: [] },
   { type: 'function', name: 'projectCount', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] },
+  { type: 'function', name: 'contributionDeadline', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint64' }] },
   { type: 'function', name: 'settledSplit', stateMutability: 'view', inputs: [], outputs: [{ type: 'address' }] },
   { type: 'function', name: 'revealAllocation', stateMutability: 'nonpayable',
     inputs: [{ type: 'uint256' }, { type: 'uint256' }, { type: 'bytes' }], outputs: [] },
@@ -42,6 +44,15 @@ async function main() {
     console.log(`  ${label}: ${rc.status} (gas ${rc.gasUsed})`);
     if (rc.status !== 'success') throw new Error(`${label} reverted`);
   };
+
+  // Wait for the deadline instead of firing into it. This script used to call
+  // finalizeTally blind, and running it a minute early — or against an RPC backend
+  // whose `latest` block lagged — died on `DeadlineNotReached` reported as sixty
+  // lines of ABI dump with the actual reason nowhere in the first screenful. The
+  // round WILL be finalizable; it just is not yet, and that is a thing to wait
+  // for, not to crash on.
+  const deadline = (await c.read.contributionDeadline()) as bigint;
+  await waitForDeadline(pub, deadline, 'contributions close');
 
   console.log('finalizeTally…');
   await wait(await c.write.finalizeTally(), 'finalizeTally');

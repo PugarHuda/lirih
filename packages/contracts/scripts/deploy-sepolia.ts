@@ -1,6 +1,7 @@
 // Deploy Lirih to Ethereum Sepolia. Requires DEPLOYER_PRIVATE_KEY (funded) in .env.
 //   npx hardhat run scripts/deploy-sepolia.ts --network sepolia
 import { network } from 'hardhat';
+import { freshChainTime } from './chain-time.ts';
 
 // 0xSplits V2 PushSplitFactory V2.2 — verified live on Sepolia 2026-07-22
 const SPLIT_FACTORY = '0x8E8eB0cC6AE34A38B67D5Cf91ACa38f60bc3Ecf4';
@@ -64,7 +65,7 @@ async function main() {
   // anchor the deadline to chain time, not the local clock — `contribute` and
   // `finalizeTally` both compare against block.timestamp.
   const pub = await viem.getPublicClient();
-  const now = (await pub.getBlock()).timestamp;
+  const now = await freshChainTime(pub);
   const deadline = now + BigInt(CONTRIB_WINDOW_SECS);
   const round = await viem.deployContract('LirihRound', [
     cusdc.address,

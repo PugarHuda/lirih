@@ -13,6 +13,7 @@ import { createWalletClient, createPublicClient, http, parseEther, formatEther, 
 import { privateKeyToAccount } from 'viem/accounts';
 import { sepolia } from 'viem/chains';
 import { donate } from './donate.ts';
+import { freshChainTime } from './chain-time.ts';
 
 // ⚠️ NEVER fund the well-known hardhat/anvil test accounts on a PUBLIC testnet.
 // Their private keys are public, so sweeper bots empty them within seconds —
@@ -83,7 +84,10 @@ async function main() {
   const roundAbi = [{ type: 'function', name: 'contributionDeadline', stateMutability: 'view',
     inputs: [], outputs: [{ type: 'uint64' }] }] as const;
   const deadline = Number(await pub.readContract({ address: round, abi: roundAbi, functionName: 'contributionDeadline' }));
-  const chainNow = Number((await pub.getBlock()).timestamp);
+  // Fresh, not just `latest`: a stale block makes a window that has already
+  // closed look open, and seeding would then spend gas per contribution until
+  // one reverts DeadlinePassed halfway through the plan.
+  const chainNow = Number(await freshChainTime(pub));
   const left = deadline - chainNow;
   const needed = 90 * PLAN.length;
   if (left <= 0) {
