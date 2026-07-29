@@ -72,11 +72,12 @@ contract LirihRound is ReentrancyGuard {
     address public settledSplit;
     uint256 public revealedCount;
 
-    // How far the tally and allocation passes have got. Both are resumable, so a
-    // round with more projects than fit in one block can still be driven to
-    // completion — see finalizeTallyPaged.
+    // How far the tally, allocation and escrow-forwarding passes have got. All
+    // three are resumable, so a round with more projects than fit in one block
+    // can still be driven to completion — see finalizeTallyPaged.
     uint256 public tallyCursor;
     uint256 public allocCursor;
+    uint256 public forwardCursor;
 
     // Donor's RUNNING TOTAL per project, viewer-granted so they can decrypt it in
     // their wallet (Snap) — the coercion-resistance path: you can see what you
@@ -153,6 +154,14 @@ contract LirihRound is ReentrancyGuard {
     {
         if (phase != Phase.Contribution) revert WrongPhase();
         require(projects.length < MAX_PROJECTS, "too many projects");
+        // A zero payout BRICKS THE ROUND. Settlement forwards each project its
+        // escrowed donations, ERC-7984 rejects address(0) as a receiver, and a
+        // project's payout can never be edited — so one typo here leaves a round
+        // that can never leave Allocated and donor escrow locked in this contract
+        // forever. That is the exact failure the permissionless pipeline and
+        // sweepPool were added to rule out, reachable through the one input the
+        // operator still controls. Costs a single comparison to close.
+        require(payout != address(0), "zero payout");
         id = projects.length;
         Project storage p = projects.push();
         p.payout = payout;
@@ -197,16 +206,23 @@ contract LirihRound is ReentrancyGuard {
         emit PoolFunded(msg.sender, received, matchingPool);
     }
 
-    /// @notice Recover the matching pool when settlement could not distribute it.
-    /// @dev Only reachable in the all-whale case: every project's match was zero,
-    ///      so `settle` had no QF weights to divide by, created no split, and left
-    ///      the pool sitting here. `settledSplit == address(0)` is exactly that
-    ///      condition. Sends to the operator, who is whoever funded the round at
-    ///      construction. This closes the one path where funds could be stranded
-    ///      permanently — the counterpart to making the pipeline permissionless.
+    /// @notice Recover whatever matching token is left once the round has settled.
+    /// @dev Settled is the only guard that matters, and it is doing all the work:
+    ///      before it, the pool is an input to a computation nobody may disturb;
+    ///      after it, M has already been transferred to the split and distributed,
+    ///      so anything still sitting here is by definition surplus.
+    ///
+    ///      It used to additionally require `settledSplit == address(0)` — the
+    ///      all-whale case, where no project earned match, no split was created,
+    ///      and the whole pool stayed put. That is the LOUD case, not the only one.
+    ///      A round that settled normally strands any matching token sent to this
+    ///      address directly rather than through `fundPool`, which anyone can do
+    ///      with one ERC-20 call, and that condition locked exactly those funds
+    ///      forever. Dropping the check covers both cases with less code.
+    ///
+    ///      Never touches donations: those are cUSDC and left in `settle`.
     function sweepPool(address to) external onlyOperator {
         if (phase != Phase.Settled) revert WrongPhase();
-        require(settledSplit == address(0), "pool was distributed");
         uint256 amount = matchingToken.balanceOf(address(this));
         require(amount > 0, "nothing to sweep");
         require(matchingToken.transfer(to, amount), "transfer failed");
@@ -299,8 +315,7 @@ contract LirihRound is ReentrancyGuard {
         if (block.timestamp <= contributionDeadline) revert DeadlineNotReached();
         require(maxCount > 0, "maxCount = 0");
 
-        uint256 end = tallyCursor + maxCount;
-        if (end > projects.length) end = projects.length;
+        uint256 end = _pageEnd(tallyCursor, maxCount);
         for (uint256 i = tallyCursor; i < end; ++i) {
             Project storage p = projects[i];
             euint256 sq = Nox.mul(p.sumRoot, p.sumRoot);
@@ -338,8 +353,7 @@ contract LirihRound is ReentrancyGuard {
         ebool empty = Nox.eq(sumMatch, EZERO);
         euint256 denom = Nox.select(empty, EONE, sumMatch); // avoid div-by-zero saturation
 
-        uint256 end = allocCursor + maxCount;
-        if (end > projects.length) end = projects.length;
+        uint256 end = _pageEnd(allocCursor, maxCount);
         for (uint256 i = allocCursor; i < end; ++i) {
             Project storage p = projects[i];
             euint256 alloc = Nox.div(Nox.mul(Menc, p.matchHandle), denom);
@@ -367,6 +381,53 @@ contract LirihRound is ReentrancyGuard {
         p.revealed = true;
         revealedCount++;
         emit AllocationRevealed(projectId, amount);
+    }
+
+    // ── Forward escrow (encrypted, resumable) ─────────────────────────────────
+
+    /// @notice Deliver at most `maxCount` more projects their escrowed donations,
+    ///         still encrypted. Resumable, permissionless, and safe to skip
+    ///         entirely — `settle` forwards whatever is left.
+    /// @dev This existed only inside `settle` before, which left ONE unbounded
+    ///      loop in a contract whose other two had been made resumable for
+    ///      exactly this reason. It is also the expensive one: a confidential
+    ///      transfer is ~187k, so 64 projects is ~12M of `settle`'s cost, next to
+    ///      a Splits `createSplit` in the same transaction. That fits a 60M
+    ///      Sepolia block today — but "today's gas limit" is the argument the
+    ///      paged tally was written to stop relying on, and it applies here
+    ///      unchanged.
+    ///
+    ///      Allowed from Allocated so it can be drained ahead of settlement. Not
+    ///      earlier: `sumC` must be final, and a project's own payout learning its
+    ///      escrow before the round is allocated changes nothing about the maths
+    ///      but does hand it the money before the round agrees it is over.
+    function forwardEscrowPaged(uint256 maxCount) external nonReentrant {
+        if (phase != Phase.Allocated) revert WrongPhase();
+        require(maxCount > 0, "maxCount = 0");
+        _forwardEscrow(maxCount);
+    }
+
+    /// @dev Σ over projects of sumC == the round's whole escrowed balance, and
+    ///      ERC-7984 caps a transfer at the balance, so this can never overdraw
+    ///      however it is sliced. The cursor is what makes it idempotent: a
+    ///      project already forwarded is never behind it again.
+    function _forwardEscrow(uint256 maxCount) internal {
+        uint256 end = _pageEnd(forwardCursor, maxCount);
+        // A round that never received a donation has never held cUSDC, so its
+        // balance HANDLE was never initialised — and ERC-7984 reverts on a
+        // transfer from an uninitialised handle even when the amount is an
+        // encrypted zero. Without this check, a round with projects registered
+        // and no contributions could never settle: the forward loop reverted
+        // every time, the phase stuck at Allocated, and the matching pool was
+        // locked in here forever because sweepPool only opens once Settled.
+        // Nothing to send is not an error, so advance the cursor and move on.
+        if (Nox.isInitialized(cToken.confidentialBalanceOf(address(this)))) {
+            for (uint256 i = forwardCursor; i < end; ++i) {
+                Nox.allowTransient(projects[i].sumC, address(cToken));
+                cToken.confidentialTransfer(projects[i].payout, projects[i].sumC);
+            }
+        }
+        forwardCursor = end;
     }
 
     // ── Settle (public: matching pool -> Splits V2) ────────────────────────────
@@ -398,19 +459,15 @@ contract LirihRound is ReentrancyGuard {
         // effects before value-moving interactions (nonReentrant also guards)
         phase = Phase.Settled;
 
-        // Forward each project's escrowed contributions, still confidential.
-        // Σ over projects of sumC == the round's whole escrowed balance, and
-        // ERC-7984 caps at balance, so this can't overdraw.
-        for (uint256 i; i < n; ++i) {
-            Nox.allowTransient(projects[i].sumC, address(cToken));
-            cToken.confidentialTransfer(projects[i].payout, projects[i].sumC);
-        }
+        // Forward whatever forwardEscrowPaged has not already delivered. On a
+        // round nobody paged, that is all of it and this behaves exactly as it
+        // always did; on one that was paged to completion, it is a no-op.
+        _forwardEscrow(type(uint256).max);
 
         // QF weights only exist if some project earned match. In an all-whale
-        // round every matchₚ == 0, so there is nothing to weight the pool by.
-        // ponytail: pool then stays in this contract — no sweep path, because a
-        // real round always has one non-whale project. Add `sweepPool(address)`
-        // if a deployment must be able to recover it.
+        // round every matchₚ == 0, so there is nothing to weight the pool by, no
+        // split is created, and the pool stays here — which is precisely the
+        // `settledSplit == address(0)` condition `sweepPool` recovers from.
         if (total > 0) {
             Split memory s = Split({
                 recipients: recipients,
@@ -428,6 +485,22 @@ contract LirihRound is ReentrancyGuard {
     }
 
     // ── helpers ───────────────────────────────────────────────────────────────
+
+    /// @dev Where a page ends: `cursor + maxCount`, clamped to the project count.
+    ///
+    ///      Written this way for one reason. The unpaged entry points call the
+    ///      paged internals with `type(uint256).max`, and `cursor + max` PANICS on
+    ///      overflow the moment `cursor` is non-zero. So after any paged call had
+    ///      advanced a cursor, the matching unpaged "just finish it" function
+    ///      reverted — exactly when a caller reaches for it. Nothing was strandable
+    ///      (calling the paged version again always worked) but it is a revert
+    ///      where none is meant to exist, and it only shows up in the mixed order.
+    function _pageEnd(uint256 cursor, uint256 maxCount) internal view returns (uint256) {
+        uint256 n = projects.length;
+        unchecked {
+            return maxCount >= n - cursor ? n : cursor + maxCount;
+        }
+    }
 
     /// @dev Clamp the sqrt input to CONTRIB_CAP so the 41-bit search is always
     ///      exact — we cannot `require(x <= cap)` on an encrypted value. Doubles

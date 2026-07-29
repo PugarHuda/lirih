@@ -117,8 +117,41 @@ describe('Lirih end-to-end confidential QF round', () => {
     assert.equal(await cusdc.read.confidentialBalanceOf([pA]), ZERO_HANDLE, 'A unpaid pre-settle');
     assert.equal(await cusdc.read.confidentialBalanceOf([pB]), ZERO_HANDLE, 'B unpaid pre-settle');
 
+    // Drain the forwarding loop one project at a time, so this round covers BOTH
+    // paths: the paged pass delivers A, and settle's remainder pass delivers B.
+    // The page boundary has to be observable to be worth anything — if it were a
+    // no-op that silently forwarded everything, B would already be paid here.
+    await round.write.forwardEscrowPaged([1n]);
+    assert.equal(await round.read.forwardCursor(), 1n, 'one project forwarded');
+    assert.notEqual(
+      await cusdc.read.confidentialBalanceOf([pA]), ZERO_HANDLE,
+      'the paged pass really delivered project A',
+    );
+    assert.equal(
+      await cusdc.read.confidentialBalanceOf([pB]), ZERO_HANDLE,
+      'and stopped: project B is still unpaid',
+    );
+
+    // Matching token sent straight to the round rather than through fundPool is
+    // surplus the allocation maths never saw, so settlement never pays it out.
+    // sweepPool used to refuse whenever a split had been created — which is every
+    // normal round, exactly like this one — so precisely these funds were locked
+    // in the contract forever.
+    const surplus = parseEther('7');
+    await usdc.write.mint([round.address, surplus]);
+
     await round.write.settle();
     assert.equal(Number(await round.read.phase()), 3, 'phase == Settled');
+    assert.equal(await round.read.forwardCursor(), 2n, 'settle forwarded the remainder');
+    assert.notEqual(await round.read.settledSplit(), `0x${'00'.repeat(20)}`, 'a real split exists');
+
+    const opBefore = await usdc.read.balanceOf([op.account.address]);
+    await round.write.sweepPool([op.account.address]);
+    assert.equal(await usdc.read.balanceOf([round.address]), 0n, 'nothing left stranded');
+    assert.equal(
+      await usdc.read.balanceOf([op.account.address]), opBefore + surplus,
+      'the surplus came back, and only the surplus — M went to the split',
+    );
 
     assert.notEqual(
       await cusdc.read.confidentialBalanceOf([pA]), ZERO_HANDLE,
@@ -128,5 +161,6 @@ describe('Lirih end-to-end confidential QF round', () => {
       await cusdc.read.confidentialBalanceOf([pB]), ZERO_HANDLE,
       'project B received its escrowed confidential donations',
     );
+
   });
 });

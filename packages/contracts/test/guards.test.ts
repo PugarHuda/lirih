@@ -9,7 +9,12 @@ import { timeTravel } from './helpers.ts';
 // reverts before any Nox arithmetic runs, so the whole file stays cheap.
 // The happy path lives in round.e2e.test.ts.
 
-const SPLIT_ZERO = '0x0000000000000000000000000000000000000000';
+const ZERO_ADDR = '0x0000000000000000000000000000000000000000';
+// Any non-zero address will do as a payout target — these tests never assert on
+// what it receives, only that the round reaches the phase where it would.
+// It must not be zero: registerProject rejects that, because a zero payout makes
+// settlement's confidential forward revert forever and strands every donation.
+const PAYOUT = '0x000000000000000000000000000000000000dEaD';
 
 // Short window on purpose: the suite shares a ~3600s proof-expiry budget
 // across ALL files. See test/helpers.ts.
@@ -34,15 +39,28 @@ describe('LirihRound guards', () => {
   it('only the operator may register projects', async () => {
     const { round, other } = await fixture();
     await assert.rejects(
-      () => round.write.registerProject([SPLIT_ZERO, 'x'], { account: other.account }),
+      () => round.write.registerProject([PAYOUT, 'x'], { account: other.account }),
       /NotOperator/,
       'a stranger must not be able to add a payout address',
     );
   });
 
+  // Found by writing the paged-forwarding test against a fixture that used the
+  // zero address as a payout. A zero payout is accepted at registration, then
+  // ERC-7984 rejects address(0) as a receiver when settlement forwards that
+  // project its escrow — and a payout can never be edited afterwards. The round
+  // sticks in Allocated and every donation is locked in the contract forever,
+  // which is precisely the outcome the permissionless pipeline and sweepPool
+  // were built to make impossible, reached through the one input the operator
+  // still types by hand.
+  it('refuses a zero payout address, which would strand the round forever', async () => {
+    const { round } = await fixture();
+    await assert.rejects(() => round.write.registerProject([ZERO_ADDR, 'typo']), /zero payout/);
+  });
+
   it('rejects contributions once the deadline has passed', async () => {
     const { round, conn, op } = await fixture();
-    await round.write.registerProject([SPLIT_ZERO, 'demo project']);
+    await round.write.registerProject([PAYOUT, 'demo project']);
     await timeTravel(conn, 21);
     // the deadline check runs before fromExternal, so a dummy handle is fine
     await assert.rejects(
@@ -100,14 +118,14 @@ describe('LirihRound guards', () => {
     await round.write.settle();
 
     assert.equal(Number(await round.read.phase()), 3, 'phase == Settled');
-    assert.equal(await round.read.settledSplit(), SPLIT_ZERO, 'no split was created');
+    assert.equal(await round.read.settledSplit(), ZERO_ADDR, 'no split was created');
     assert.equal(await usdc.read.balanceOf([round.address]), M, 'pool stayed put');
   });
 
   it('refuses to settle while an allocation is still sealed', async () => {
     const { round, usdc, conn, M } = await fixture();
     await usdc.write.mint([round.address, M]);
-    await round.write.registerProject([SPLIT_ZERO, 'demo project']);
+    await round.write.registerProject([PAYOUT, 'demo project']);
     await timeTravel(conn, 21);
     await round.write.finalizeTally();
     await round.write.computeAllocations();
@@ -117,7 +135,7 @@ describe('LirihRound guards', () => {
 
   it('rejects a forged decryption proof', async () => {
     const { round, conn } = await fixture();
-    await round.write.registerProject([SPLIT_ZERO, 'demo project']);
+    await round.write.registerProject([PAYOUT, 'demo project']);
     await timeTravel(conn, 21);
     await round.write.finalizeTally();
     await round.write.computeAllocations();
@@ -165,7 +183,7 @@ describe('LirihRound guards', () => {
 
   // ── stranded-pool recovery ───────────────────────────────────────────────
 
-  it('sweeps the pool only when settlement distributed nothing', async () => {
+  it('sweeps the pool when settlement distributed nothing', async () => {
     const { round, usdc, conn, op, other, M } = await fixture();
     await usdc.write.mint([round.address, M]);
     await timeTravel(conn, 21);
@@ -173,7 +191,7 @@ describe('LirihRound guards', () => {
     await round.write.computeAllocations();
     await round.write.settle();
     // empty round -> no split was created -> the pool is stranded here
-    assert.equal(await round.read.settledSplit(), SPLIT_ZERO);
+    assert.equal(await round.read.settledSplit(), ZERO_ADDR);
 
     await assert.rejects(
       () => round.write.sweepPool([other.account.address], { account: other.account }),
@@ -192,7 +210,7 @@ describe('LirihRound guards', () => {
   it('tallies and allocates across several transactions without advancing early', async () => {
     const { round, usdc, conn, M } = await fixture();
     await usdc.write.mint([round.address, M]);
-    for (const n of ['A', 'B', 'C']) await round.write.registerProject([SPLIT_ZERO, `project ${n}`]);
+    for (const n of ['A', 'B', 'C']) await round.write.registerProject([PAYOUT, `project ${n}`]);
     await timeTravel(conn, 21);
 
     // One project at a time. The phase must NOT advance until the last one lands:
@@ -215,9 +233,65 @@ describe('LirihRound guards', () => {
     assert.equal(await round.read.allocCursor(), 3n);
   });
 
+  // Regression: the unpaged entry points call the paged internals with
+  // `type(uint256).max`, and `cursor + max` PANICS on overflow once the cursor is
+  // non-zero. So "page a bit, then just finish it" — the obvious way to use these
+  // — reverted, and only in that mixed order. Every existing test used one style
+  // or the other throughout, which is exactly why it survived.
+  it('lets a paged pass be finished by the unpaged one', async () => {
+    const { round, usdc, conn, M } = await fixture();
+    await usdc.write.mint([round.address, M]);
+    for (const n of ['A', 'B', 'C']) await round.write.registerProject([PAYOUT, `project ${n}`]);
+    await timeTravel(conn, 21);
+
+    await round.write.finalizeTallyPaged([1n]);
+    await round.write.finalizeTally(); // must not panic on cursor + max
+    assert.equal(Number(await round.read.phase()), 1, 'Tallied');
+    assert.equal(await round.read.tallyCursor(), 3n);
+
+    await round.write.computeAllocationsPaged([1n]);
+    await round.write.computeAllocations();
+    assert.equal(Number(await round.read.phase()), 2, 'Allocated');
+    assert.equal(await round.read.allocCursor(), 3n);
+  });
+
+  // The reason this one is worth its own name: it is the case that used to brick.
+  // Projects registered, nobody donated, so the round never held cUSDC and its
+  // balance handle was never initialised — and ERC-7984 refuses a transfer from an
+  // uninitialised handle even for an encrypted zero. Settlement's forward loop
+  // therefore reverted on every attempt, the round could never leave Allocated,
+  // and the matching pool sat locked in a contract whose only recovery path
+  // (sweepPool) opens after settlement. The empty-round test that already existed
+  // missed it by registering no projects at all, so the loop never ran.
+  it('forwards escrow in pages, and never forwards a project twice', async () => {
+    const { round, usdc, conn, M } = await fixture();
+    await usdc.write.mint([round.address, M]);
+    for (const n of ['A', 'B', 'C']) await round.write.registerProject([PAYOUT, `project ${n}`]);
+    await timeTravel(conn, 21);
+    await round.write.finalizeTally();
+
+    // Not before the allocations exist: sumC has to be final first.
+    await assert.rejects(() => round.write.forwardEscrowPaged([1n]), /WrongPhase/);
+    await round.write.computeAllocations();
+    await assert.rejects(() => round.write.forwardEscrowPaged([0n]), /maxCount = 0/);
+
+    await round.write.forwardEscrowPaged([2n]);
+    assert.equal(await round.read.forwardCursor(), 2n, 'two of three forwarded');
+    await round.write.forwardEscrowPaged([9n]); // overshoot clamps to the end
+    assert.equal(await round.read.forwardCursor(), 3n);
+    await round.write.forwardEscrowPaged([1n]); // nothing left; must not re-send
+    assert.equal(await round.read.forwardCursor(), 3n, 'cursor does not run past the book');
+
+    // These projects' allocations are still sealed, so settlement is not open to
+    // anyone yet — forwarding early does not smuggle a round past that gate.
+    // The hand-off to settle's own remainder pass is asserted with real balances
+    // in round.e2e.test.ts, where an actual donation exists to move.
+    await assert.rejects(() => round.write.settle(), /WrongPhase/);
+  });
+
   it('rejects a zero page size instead of looping forever', async () => {
     const { round, conn } = await fixture();
-    await round.write.registerProject([SPLIT_ZERO, 'p']);
+    await round.write.registerProject([PAYOUT, 'p']);
     await timeTravel(conn, 21);
     await assert.rejects(() => round.write.finalizeTallyPaged([0n]), /maxCount = 0/);
   });
@@ -228,7 +302,7 @@ describe('LirihRound guards', () => {
   // hold, the error is dead code.
   it('bounds-checks project ids before the exists flag is ever consulted', async () => {
     const { round, conn, op } = await fixture();
-    await round.write.registerProject([SPLIT_ZERO, 'only project']);
+    await round.write.registerProject([PAYOUT, 'only project']);
 
     await assert.rejects(
       () => round.write.contribute([99n, `0x${'00'.repeat(32)}`, '0x', op.account.address]),
@@ -272,7 +346,7 @@ describe('LirihRound guards', () => {
 
     await round.write.acceptOperator({ account: other.account });
     assert.equal((await round.read.operator()).toLowerCase(), other.account.address.toLowerCase());
-    await round.write.registerProject([SPLIT_ZERO, 'registered by the new operator'], { account: other.account });
+    await round.write.registerProject([PAYOUT, 'registered by the new operator'], { account: other.account });
     assert.equal(Number(await round.read.projectCount()), 1);
   });
 });
