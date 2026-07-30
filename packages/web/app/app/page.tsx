@@ -48,6 +48,10 @@ export default function App() {
   const [round, setRound] = useState<{ phase: number; deadline: number }>();
   const [pool, setPool] = useState<bigint>();
   const [view, setView] = useState('donate');
+  // Read from chain, not hardcoded: the names live on-chain precisely so the UI
+  // cannot pass off a label map as real state, and a round with three projects
+  // must not render two.
+  const [projects, setProjects] = useState<{ id: number; name: string; payout: `0x${string}`; gave: boolean }[]>([]);
 
   // Read the round's phase before offering to spend anyone's gas on it. A
   // settled round is the NORMAL state of a demo deployment, so this is what most
@@ -60,6 +64,31 @@ export default function App() {
     pub.readContract({ address: ADDRESSES.round, abi: roundAbi, functionName: 'matchingPool' })
       .then((m) => setPool(m as bigint)).catch(() => {});
   }, []);
+
+  // The project list, and whether this visitor has already given to each. Both
+  // are plaintext on-chain — participation is public, only amounts are secret —
+  // so this costs no gateway round trip and reveals nothing the events do not.
+  useEffect(() => {
+    (async () => {
+      const base = { address: ADDRESSES.round, abi: roundAbi } as const;
+      const n = Number(await pub.readContract({ ...base, functionName: 'projectCount' }));
+      if (n === 0) return;
+      const rows = await pub.multicall({
+        contracts: Array.from({ length: n }, (_, i) => ({ ...base, functionName: 'projects' as const, args: [BigInt(i)] })),
+        allowFailure: false,
+      });
+      const gave = account
+        ? await pub.multicall({
+            contracts: Array.from({ length: n }, (_, i) => ({ ...base, functionName: 'hasGiven' as const, args: [account, BigInt(i)] })),
+            allowFailure: false,
+          })
+        : [];
+      setProjects((rows as unknown as any[][]).map((p, i) => ({
+        id: i, name: (p[8] as string) || `project ${i}`, payout: p[0] as `0x${string}`,
+        gave: Boolean(gave[i]),
+      })));
+    })().catch(() => { /* the picker degrades to nothing; Results reports read failures */ });
+  }, [account]);
 
   const open = round ? acceptsContributions(round.phase, round.deadline) : undefined;
   const overCap = Number(amount) > SQRT_WEIGHT_CAP;
@@ -227,22 +256,41 @@ export default function App() {
 
       {view === 'donate' && (
       <>
-      <h2 style={{ marginBottom: 'var(--s3)' }}>Donate confidentially</h2>
+      <h2 style={{ marginBottom: 'var(--s3)' }}>Who are you funding?</h2>
       <p className="dim" style={{ fontSize: '0.95rem' }}>
+        Quadratic funding is a contest between these projects for the pool above, and
+        it counts <strong>donors</strong> rather than money — so choose one, then give.
         Four transactions get you a confidential balance and authorise the round; the
-        fifth is the donation itself, and it is the only one nobody can read.
+        fifth is the donation, and it is the only one nobody can read.
       </p>
+
+      {/* The projects ARE the interface. A dropdown of ids made the choice
+          abstract: you picked "1" and never saw who you were funding. */}
+      <div className="projects">
+        {projects.length === 0 && <p className="dim">reading the project list…</p>}
+        {projects.map((p) => (
+          <button
+            key={p.id}
+            className="project"
+            aria-pressed={String(p.id) === projectId}
+            onClick={() => setProjectId(String(p.id))}
+          >
+            <span>
+              <span className="name">{p.name}</span>
+              <span className="who"> · pays {p.payout.slice(0, 10)}…</span>
+            </span>
+            <span className="stat-mini">
+              {p.gave ? 'SEALED' : '—'}
+              <span>your gift</span>
+            </span>
+          </button>
+        ))}
+      </div>
 
       <div className="card">
         <div className="row">
-          <label>Amount
+          <label>Amount (mUSDC)
             <input value={amount} onChange={(e) => setAmount(e.target.value)} size={10} aria-label="Amount in mUSDC" />
-          </label>
-          <label>Project
-            <select value={projectId} onChange={(e) => setProjectId(e.target.value)} aria-label="Project id">
-              <option value="0">0 · Clean Water Initiative</option>
-              <option value="1">1 · Open Source Maintainers</option>
-            </select>
           </label>
         </div>
 

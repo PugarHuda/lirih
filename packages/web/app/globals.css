@@ -190,6 +190,37 @@ td.num { text-align: right; font-family: var(--font-mono); font-weight: 700;
 .stats dd small { font-size: 0.7rem; font-family: var(--font-display); color: var(--fg-muted); }
 .stats dd.accent { background: var(--accent); padding: 0 4px; display: inline-block; }
 
+/* ── project chooser (Lirih) ──────────────────────────────────────────── */
+/* Quadratic funding is a comparison between projects, so the projects are the
+   interface. A <select> made the choice abstract — you picked "1" out of a
+   dropdown and never saw who you were funding, or against whom. */
+.projects { display: grid; gap: var(--s4); margin-bottom: var(--s5); }
+.project {
+  display: grid; grid-template-columns: 1fr auto; gap: var(--s3);
+  align-items: center; text-align: left;
+  background: var(--surface); border: var(--bd); box-shadow: var(--shadow-sm);
+  padding: var(--s4); min-height: 72px; width: 100%;
+  font: 500 1rem/1.3 var(--font-display); text-transform: none; letter-spacing: 0;
+  color: var(--ink);
+}
+.project:hover:not(:disabled) { background: var(--violet); }
+.project[aria-pressed='true'] { background: var(--accent); box-shadow: var(--shadow); }
+/* Same rule as the sibling project's ladder: muted ink is for white and cream,
+   never for an accent block. */
+.project[aria-pressed='true'] .who,
+.project[aria-pressed='true'] .stat-mini span,
+.project:hover:not(:disabled) .who,
+.project:hover:not(:disabled) .stat-mini span { color: var(--ink); }
+.project .name { font-weight: 700; font-size: 1.05rem; }
+.project .who { font-family: var(--font-mono); font-size: 0.72rem; color: var(--fg-muted); }
+.project .stat-mini {
+  font-family: var(--font-mono); font-weight: 700; font-size: 0.95rem;
+  font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap;
+}
+.project .stat-mini span { display: block; font-family: var(--font-display);
+                           font-weight: 500; font-size: 0.68rem; text-transform: uppercase;
+                           letter-spacing: 0.08em; color: var(--fg-muted); }
+
 .hero { padding-top: var(--s8); padding-bottom: var(--s7); }
 .hero p.lede { font-size: 1.2rem; max-width: 34em; }
 .eyebrow { display: inline-block; font-family: var(--font-mono); font-size: 0.75rem;

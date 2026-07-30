@@ -22,6 +22,15 @@ Ethereum Sepolia. The target protocol is never forked or modified.
 
 Submission for the iExec WTF Hackathon Summer Edition.
 
+## What is new, and what is not
+
+**Every line of this codebase was written during the hackathon.** Nothing was
+carried over from Diam, the confidential OTC desk the same author built for the
+Vibe Coding hackathon, or from any other prior project — different mechanism
+(quadratic funding, not an RFQ), different integrated protocol (0xSplits, not a
+peer-to-peer settlement), different chain. The only third-party code here is
+upstream and unmodified: iExec Nox, OpenZeppelin, and 0xSplits V2.
+
 ## How privacy is added (say the pattern out loud)
 
 ERC-7984 handles are encrypted; a public splitter needs plaintext at its
@@ -253,8 +262,11 @@ cd packages/web && npm install && npm run dev
 
 It does three things worth clicking:
 
-- **Donate confidentially** — faucet → wrap to cUSDC → authorise the round →
-  encrypted `contribute`, as four labelled steps with an Etherscan link per
+- **Choose a project, then give.** The projects are the interface, read from
+  chain — quadratic funding is a contest *between* them, so a dropdown of ids made
+  the one decision that matters abstract: you picked "1" and never saw who you
+  were funding, or against whom. Then faucet → wrap to cUSDC → authorise the round
+  → encrypted `contribute`, as labelled steps with an Etherscan link per
   transaction and a chain guard that offers to switch you to Sepolia.
 - **Decrypt your own contribution, and nobody else's.** The running total comes
   back in plaintext for you alone, with the active viewing mode labelled.
