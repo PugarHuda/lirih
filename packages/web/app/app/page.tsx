@@ -13,6 +13,8 @@ import {
 import { connectSnap, getNoxAddress } from '../../lib/snap';
 import { Alert, Ext, Lock, Spinner } from '../icons';
 import Results from '../Results';
+import { Shell } from '../Shell';
+import { explorerAddr } from '../../lib/lirih';
 
 /// Which key holds the viewer role — the thing that decides whether the
 /// coercion-resistance claim actually holds for this donation. Never inferred
@@ -45,6 +47,7 @@ export default function App() {
   const [hashes, setHashes] = useState<{ label: string; hash: `0x${string}` }[]>([]);
   const [round, setRound] = useState<{ phase: number; deadline: number }>();
   const [pool, setPool] = useState<bigint>();
+  const [view, setView] = useState('donate');
 
   // Read the round's phase before offering to spend anyone's gas on it. A
   // settled round is the NORMAL state of a demo deployment, so this is what most
@@ -171,52 +174,64 @@ export default function App() {
     setStatus('done — your amount is encrypted on-chain');
   }
 
-  return (
-    <main className="wrap" style={{ paddingTop: 'var(--s6)', paddingBottom: 'var(--s8)' }}>
-      <div className="row" style={{ justifyContent: 'space-between', marginBottom: 'var(--s5)' }}>
-        <Link href="/" className="mono dim" style={{ textDecoration: 'none' }}>← Lirih</Link>
-        <span className="pill">{account ? `${account.slice(0, 6)}…${account.slice(-4)}` : 'not connected'}</span>
+  const statsStrip = (
+    <dl className="stats">
+      <div>
+        <dt>Phase</dt>
+        <dd className={open ? 'accent' : undefined}>
+          {round ? PHASES[round.phase] ?? round.phase : '…'}
+        </dd>
       </div>
+      <div>
+        <dt>{open ? 'Closes' : 'Closed'}</dt>
+        <dd>{round ? <Countdown to={round.deadline} /> : '…'}</dd>
+      </div>
+      <div>
+        <dt>Matching pool</dt>
+        <dd>{pool === undefined ? '…' : Number(formatEther(pool)).toLocaleString()} <small>mUSDC</small></dd>
+      </div>
+      <div>
+        <dt>Your donation</dt>
+        <dd>{mineLabel}</dd>
+      </div>
+    </dl>
+  );
 
+  return (
+    <Shell
+      brand="Lirih"
+      tagline="confidential quadratic funding"
+      chainLabel="Ethereum Sepolia"
+      account={account}
+      address={ADDRESSES.round}
+      explorer={explorerAddr}
+      stats={statsStrip}
+      view={view}
+      onView={setView}
+      views={[
+        { id: 'donate', label: 'Donate', disabled: open === false,
+          hint: open === false ? 'this round is closed to new donations' : undefined },
+        { id: 'results', label: 'Results' },
+        { id: 'about', label: 'How it works' },
+      ]}
+    >
+      {view === 'donate' && open === false && round && (
+        <div className="note note-info" style={{ marginBottom: 'var(--s4)' }}>
+          <strong>This round is closed to new donations</strong> — phase{' '}
+          <strong>{PHASES[round.phase] ?? round.phase}</strong>
+          {round.phase === 0 && `, deadline passed ${new Date(round.deadline * 1000).toLocaleString()}`}.
+          Donating would revert. Open <b>Results</b> to read the allocations, check they add
+          up against the on-chain pool, or push the round to settlement yourself.
+        </div>
+      )}
+
+      {view === 'donate' && (
+      <>
       <h2 style={{ marginBottom: 'var(--s3)' }}>Donate confidentially</h2>
-      <p className="dim narrow" style={{ fontSize: '0.95rem' }}>
+      <p className="dim" style={{ fontSize: '0.95rem' }}>
         Four transactions get you a confidential balance and authorise the round; the
         fifth is the donation itself, and it is the only one nobody can read.
       </p>
-
-      {/* State before actions. Every value is read from the round, so what the
-          page offers below and what it reports here cannot disagree. */}
-      <dl className="stats">
-        <div>
-          <dt>Phase</dt>
-          <dd className={open ? 'accent' : undefined}>
-            {round ? PHASES[round.phase] ?? round.phase : '…'}
-          </dd>
-        </div>
-        <div>
-          <dt>{open ? 'Closes' : 'Closed'}</dt>
-          <dd>{round ? <Countdown to={round.deadline} /> : '…'}</dd>
-        </div>
-        <div>
-          <dt>Matching pool</dt>
-          <dd>{pool === undefined ? '…' : Number(formatEther(pool)).toLocaleString()} <small>mUSDC</small></dd>
-        </div>
-        <div>
-          <dt>Your donation</dt>
-          <dd>{mineLabel}</dd>
-        </div>
-      </dl>
-
-      {open === false && round && (
-        <div className="note note-info" style={{ marginBottom: 'var(--s4)' }}>
-          <strong>This round is closed to new donations</strong> — it is in phase{' '}
-          <strong>{PHASES[round.phase] ?? round.phase}</strong>
-          {round.phase === 0 && `, and its deadline passed ${new Date(round.deadline * 1000).toLocaleString()}`}.
-          Donating would revert, so the buttons below are disabled. You can still read the
-          revealed allocations, check they add up against the on-chain pool, decrypt your own
-          contribution, and — if it has not settled — push it to settlement yourself below.
-        </div>
-      )}
 
       <div className="card">
         <div className="row">
@@ -296,7 +311,56 @@ export default function App() {
         </div>
       )}
 
-      <Results projectId={Number(projectId)} />
-    </main>
+      </>
+      )}
+
+      {view === 'results' && <Results projectId={Number(projectId)} />}
+
+      {view === 'about' && (
+        <>
+          <h2 style={{ marginBottom: 'var(--s3)' }}>How it works</h2>
+          <div className="card">
+            <h3>Your amount never becomes public</h3>
+            <p className="dim" style={{ marginBottom: 0, fontSize: '0.92rem' }}>
+              The gateway encrypts it inside its TEE and the transaction carries a 32-byte
+              handle. The contract accumulates <span className="mono">Σ√cᵢ</span> and{' '}
+              <span className="mono">Σcᵢ</span> per project under encryption, and only the
+              final per-project allocation is ever decrypted — by a gateway-signed proof the
+              contract verifies itself.
+            </p>
+          </div>
+          <div className="card">
+            <h3>Splitting a donation buys nothing</h3>
+            <p className="dim" style={{ marginBottom: 0, fontSize: '0.92rem' }}>
+              Quadratic funding weights a project by <span className="mono">(Σ√cᵢ)²</span> where
+              i ranges over <strong>donors</strong>, not transactions. Rooting each transaction
+              would let one donor split a gift across N of them and multiply their own weight by{' '}
+              <span className="mono">√N</span>, with no extra addresses at all. Lirih roots each
+              donor&apos;s running total instead, which is why a repeat donation costs a second
+              encrypted square root — about 1.8× the gas of a first.
+            </p>
+          </div>
+          <div className="card">
+            <h3>Nobody has to be trusted to finish</h3>
+            <p className="dim" style={{ marginBottom: 0, fontSize: '0.92rem' }}>
+              After the deadline every remaining step is fully determined, so none of them is
+              gated on an operator. If the organiser disappears, any donor can push the round
+              through from the <b>Results</b> panel and release the funds.
+            </p>
+          </div>
+          <div className="card">
+            <h3><Lock /> Coercion resistance, and its condition</h3>
+            <p className="dim" style={{ marginBottom: 0, fontSize: '0.92rem' }}>
+              With the MetaMask Snap installed your viewing key is derived from your secret
+              recovery phrase and never leaves the sandbox: you can read your own donation and
+              cannot sign anything that proves it to a briber.{' '}
+              <strong style={{ color: 'var(--fg)' }}>Without the Snap your EOA holds that role
+              and can prove the amount</strong>, so the guarantee does not hold on that path.
+              This page says which mode is active rather than choosing quietly.
+            </p>
+          </div>
+        </>
+      )}
+    </Shell>
   );
 }

@@ -19,6 +19,17 @@ import { test, expect, type Page } from '@playwright/test';
 
 const BASE = process.env.BASE ?? 'https://lirih.vercel.app';
 
+/// The app is a dashboard: panels live behind sidebar nav rather than one long
+/// scroll, so a test that wants a panel has to open it the way a visitor would.
+async function open(page: Page, label: string) {
+  const item = page.locator('nav.sidenav').getByRole('button', { name: label });
+  await item.click();
+  // React may not have hydrated when the click lands, in which case nothing
+  // happens and the assertion that follows fails 30s later against the wrong
+  // panel. Waiting for aria-current to move proves the switch actually took.
+  await expect(item).toHaveAttribute('aria-current', 'page', { timeout: 30_000 });
+}
+
 /// Fail on the failures a page hides. An unhandled rejection or a React error
 /// leaves the UI looking merely empty, which is exactly how the swallowed
 /// `refresh().catch(() => {})` bug presented before it was found.
@@ -34,7 +45,7 @@ function watchForCrashes(page: Page) {
 test('renders, and reads the live round from chain', async ({ page }) => {
   const problems = watchForCrashes(page);
   await page.goto(`${BASE}/app`, { waitUntil: 'networkidle' });
-
+  await open(page, 'Results');
 
   // The phase comes from an eth_call against the configured round. If the RPC,
   // the address or the ABI were wrong this stays undefined forever — which is a
@@ -59,10 +70,12 @@ test('renders, and reads the live round from chain', async ({ page }) => {
 
 test('gates the donor path on the round phase, and never spends gas it cannot use', async ({ page }) => {
   await page.goto(`${BASE}/app`, { waitUntil: 'networkidle' });
+  await open(page, 'Results');
   const results = page.locator('h2', { hasText: 'Results' });
   await expect(results).toContainText(/(Contribution|Tallied|Allocated|Settled)/, { timeout: 30_000 });
 
   const phase = (await results.textContent())!.match(/(Contribution|Tallied|Allocated|Settled)/)![1];
+  await open(page, 'Donate');
   const faucet = page.getByRole('button', { name: /Faucet \+ wrap/ });
   const donate = page.getByRole('button', { name: /Donate \(encrypted\)/ });
   const closed = page.getByText(/This round is closed to new donations/);
@@ -99,6 +112,7 @@ test('warns before a donation exceeds the matching-weight cap', async ({ page })
 
 test('lets anyone push the round forward, exactly when that is possible', async ({ page }) => {
   await page.goto(`${BASE}/app`, { waitUntil: 'networkidle' });
+  await open(page, 'Results');
   const results = page.locator('h2', { hasText: 'Results' });
   await expect(results).toContainText(/(Contribution|Tallied|Allocated|Settled)/, { timeout: 30_000 });
   const phase = (await results.textContent())!.match(/(Contribution|Tallied|Allocated|Settled)/)![1];
