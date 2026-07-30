@@ -134,6 +134,24 @@ takes contributions until **2026-08-05**, and it is what `packages/web/.env.loca
 points at. Donate to it, decrypt your own contribution, top up the matching pool,
 and after the deadline drive it to settlement yourself from the browser.
 
+It is seeded with cases chosen to demonstrate things rather than to look busy,
+and each was a path with no prior on-chain execution:
+
+- **A repeat donation.** Two donors gave 100 twice each. The second contribution
+  cost **3.62M gas against 2.07M** — that is the second encrypted square root,
+  the price of rooting each donor's running total instead of each transaction —
+  and decrypting that donor's own handle returns **200**, not the last 100. This
+  is the sybil fix, on-chain, rather than in a test.
+- **A crowdfunded pool.** `fundPool` called by a **non-operator** took the
+  matching pool from 10,000 to **12,500**. Permissionless while the round is
+  open, and now demonstrated rather than described.
+- **A donation past the anti-whale cap.** 2,000,000 mUSDC against a sqrt domain
+  capped at 1e24, so `_clampForSqrt` engaged. The excess still escrows and still
+  reaches the project; it just buys no further matching weight.
+- **A donation placed from a headless browser**, by the wallet-injected
+  Playwright spec, which is how the whole donor path is known to work rather
+  than assumed to.
+
 | Contract | Address |
 |---|---|
 | LirihRound — settled | `0x4f15c2a627e3f8e866a83fc57f3aa0897ad47399` |

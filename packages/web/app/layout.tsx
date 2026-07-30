@@ -7,9 +7,9 @@ export const metadata = {
     'and only the final per-project allocation ever decrypted. Live on Ethereum Sepolia.',
 };
 
-// Declared so the browser never flashes a light default before the stylesheet
-// lands, and so native form controls render dark instead of system-white.
-export const viewport = { themeColor: '#020617', colorScheme: 'dark' as const };
+// Declared so the browser chrome matches the cream canvas and native form
+// controls render light rather than inheriting a dark system preference.
+export const viewport = { themeColor: '#fffdf5', colorScheme: 'light' as const };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (

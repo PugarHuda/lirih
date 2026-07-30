@@ -99,8 +99,12 @@ export default function Landing() {
                 <tr key={r.name}>
                   <td>{r.name}</td>
                   <td className="num dim">{i === 0 ? '200' : '900'}</td>
-                  <td className="num" style={{ color: r.alloc > 0n ? 'var(--accent)' : 'var(--fg-dim)' }}>
-                    {r.revealed ? `${Number(formatEther(r.alloc)).toLocaleString(undefined, { maximumFractionDigits: 2 })}` : '—'}
+                  <td className="num">
+                    {r.revealed
+                      ? <span className={r.alloc > 0n ? 'accent' : 'dim'}>
+                          {Number(formatEther(r.alloc)).toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                        </span>
+                      : <span className="dim">—</span>}
                   </td>
                 </tr>
               ))}

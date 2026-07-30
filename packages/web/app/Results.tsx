@@ -189,8 +189,10 @@ export default function Results({ projectId }: { projectId: number }) {
                 {r.name || `project ${r.id}`}
                 <span className="dim mono"> · {r.payout.slice(0, 8)}…</span>
               </td>
-              <td className="num" style={{ color: r.revealed && r.alloc > 0n ? 'var(--accent)' : 'var(--fg-dim)' }}>
-                {r.revealed ? `${formatEther(r.alloc)} mUSDC` : 'sealed'}
+              <td className="num">
+                {r.revealed
+                  ? <span className={r.alloc > 0n ? 'accent' : 'dim'}>{formatEther(r.alloc)} mUSDC</span>
+                  : <span className="dim">sealed</span>}
               </td>
             </tr>
           ))}
@@ -258,7 +260,7 @@ export default function Results({ projectId }: { projectId: number }) {
       {mine !== undefined && (
         <p style={{ marginTop: 'var(--s2)', fontSize: '0.95rem' }}>
           Your contribution to project {projectId}:{' '}
-          <strong className="mono" style={{ color: 'var(--accent)' }}>{formatEther(mine)} mUSDC</strong>
+          <strong className="mono accent">{formatEther(mine)} mUSDC</strong>
         </p>
       )}
     </section>
