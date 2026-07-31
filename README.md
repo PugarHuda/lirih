@@ -346,7 +346,7 @@ instant a browser ran it — a barrel import pulling in `ethers`, a peer depende
 whose exports map only exposes `"."`, so the deep import type-checked and then
 failed to resolve. Nothing but opening the page catches that.
 
-Four tests, no wallet — everything asserted is what a visitor sees *before*
+Five tests, no wallet — everything asserted is what a visitor sees *before*
 connecting one, which is also what has to be right for anyone to get as far as
 connecting. They check that the phase and the on-chain project names really come
 back from Sepolia, that the donor buttons match the round's phase, that the
