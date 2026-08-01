@@ -75,6 +75,55 @@ few footguns that cost us hours.
   not resolved after 60 attempts"* is the same message for "wait longer", "wrong
   handle", and "this will never resolve", and only the first is worth retrying.
 
+## An uninitialised balance handle can strand a whole protocol
+
+This one is worth its own section, because it cost us a fund-stranding bug that
+sat undetected behind a passing test suite.
+
+ERC-7984 `require`s the SENDER's balance handle to be initialised before any
+transfer — and it enforces that even when the amount is an **encrypted zero**.
+That is defensible in isolation. What it means in practice is that a contract
+which forwards escrow to N recipients cannot safely do so until it has itself
+held the token at least once.
+
+Our round forwards each project its escrowed cUSDC at settlement. A round with
+projects registered but **no donations** had therefore never held cUSDC, its
+balance handle was never initialised, and the forward loop reverted with
+`ERC7984ZeroBalance` on every attempt — permanently. The phase stuck one step
+short of Settled, and the matching pool was locked in a contract whose only
+recovery path opens *after* settlement. Our existing "empty round settles" test
+missed it by registering zero projects, so the loop never ran.
+
+The sibling project hit the same wall from the other direction and solved it by
+wrapping zero of each coin in its constructor, purely to initialise the handles.
+That is a real pattern, and it is currently folklore.
+
+**What would help:** either let a transfer of encrypted zero from an
+uninitialised handle succeed as a no-op, or document the constructor zero-wrap as
+the canonical way to initialise a contract's own balance. Right now the failure
+surfaces as a revert in a completely different function, on a code path that only
+exists for an edge-case input.
+
+Adjacent, same class: `registerProject(address(0))` was accepted happily and then
+made settlement revert forever with `ERC7984InvalidReceiver`, because a payout
+address cannot be edited afterwards. That one is ours to guard — but the pattern
+is the same, and it is worth saying out loud in the docs: **ERC-7984 rejects
+`address(0)` as a receiver**, so any address a contract will later pay must be
+validated at the point it is stored, not at the point it is used.
+
+## Gateway limits are real and undocumented
+
+We hit rate limiting above roughly **100 concurrent `encryptInput` calls** and had
+to add backoff on the encryption path. Publishing the actual number would let
+people design for it rather than discover it under load — and the correct retry
+strategy is backoff rather than a fixed interval, because synchronised retries
+from a crowd are exactly what keeps the queue saturated.
+
+Related: the Runner is single-threaded with no batching, so an op count is a
+**wall-clock** budget, not only a gas one. A 164-op encrypted square root is ~2.05M
+gas *and* a visible pause. This shapes every sizing decision and is currently
+something you learn by measuring.
+
 ## Docs / tooling
 
 - `docs.iex.ec/nox-protocol/*` now 308-redirects to `docs.noxprotocol.io`. The
